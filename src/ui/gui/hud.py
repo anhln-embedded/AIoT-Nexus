@@ -2,20 +2,34 @@ import asyncio
 import base64
 import flet as ft
 from src.core.engine import AsyncCoreEngine
-from src.core.config import DEFAULT_PROVIDER, LLM_PROVIDERS
+from src.core.config import DEFAULT_PROVIDER, IS_PI, LLM_PROVIDERS
+
+
+def configure_window(page: ft.Page, is_pi: bool = IS_PI) -> None:
+    """Configures a kiosk window on Raspberry Pi and a dev window elsewhere."""
+    if is_pi:
+        page.padding = 0
+        page.window.full_screen = True
+        page.window.frameless = True
+        page.window.maximized = True
+        page.window.resizable = False
+        page.window.maximizable = False
+        return
+
+    page.padding = 10
+    page.window.width = 1024
+    page.window.height = 600
+    page.window.min_width = 960
+    page.window.min_height = 540
+    page.window.resizable = True
+    page.window.maximizable = True
 
 async def main_hud(page: ft.Page):
     # Setup Page Metadata
     page.title = "AIoT-Nexus Core OS HUD"
     page.theme_mode = ft.ThemeMode.DARK
     page.bgcolor = "#0B0C10"
-    page.padding = 10
-    page.window.width = 1024
-    page.window.height = 600
-    page.window.min_width = 960
-    page.window.min_height = 540
-    page.window.resizable = False
-    page.window.maximizable = False
+    configure_window(page)
     
     # Initialize Core Application Engine
     core = AsyncCoreEngine()

@@ -6,8 +6,46 @@ from pathlib import Path
 
 import flet as ft
 
+from src.ui.gui.hud import configure_window
+
+
+class FakeWindow:
+    full_screen = False
+    frameless = False
+    maximized = False
+    resizable = True
+    maximizable = True
+    width = None
+    height = None
+    min_width = None
+    min_height = None
+
+
+class FakePage:
+    def __init__(self):
+        self.padding = None
+        self.window = FakeWindow()
+
 
 class FletCompatibilityTests(unittest.TestCase):
+    def test_pi_window_is_fullscreen_kiosk(self):
+        page = FakePage()
+        configure_window(page, is_pi=True)
+
+        self.assertEqual(page.padding, 0)
+        self.assertTrue(page.window.full_screen)
+        self.assertTrue(page.window.frameless)
+        self.assertFalse(page.window.resizable)
+
+    def test_windows_window_keeps_development_dimensions(self):
+        page = FakePage()
+        configure_window(page, is_pi=False)
+
+        self.assertEqual(page.padding, 10)
+        self.assertEqual(page.window.width, 1024)
+        self.assertEqual(page.window.height, 600)
+        self.assertTrue(page.window.resizable)
+
     def test_hud_uses_valid_flet_constructor_arguments(self):
         hud_path = Path(__file__).parents[1] / "src" / "ui" / "gui" / "hud.py"
         tree = ast.parse(hud_path.read_text(encoding="utf-8"))
