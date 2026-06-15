@@ -19,6 +19,8 @@ class FakeWindow:
     height = None
     min_width = None
     min_height = None
+    max_width = None
+    max_height = None
 
 
 class FakePage:
@@ -41,10 +43,19 @@ class FletCompatibilityTests(unittest.TestCase):
         page = FakePage()
         configure_window(page, is_pi=False)
 
-        self.assertEqual(page.padding, 10)
-        self.assertEqual(page.window.width, 1024)
-        self.assertEqual(page.window.height, 600)
-        self.assertTrue(page.window.resizable)
+        self.assertEqual(page.padding, 0)
+        self.assertEqual(page.window.width, 1280)
+        self.assertEqual(page.window.height, 800)
+        self.assertEqual(page.window.max_width, 1280)
+        self.assertEqual(page.window.max_height, 800)
+        self.assertFalse(page.window.resizable)
+
+    def test_preview_resolution_can_be_overridden(self):
+        page = FakePage()
+        configure_window(page, is_pi=False, width=1280, height=720)
+
+        self.assertEqual(page.window.width, 1280)
+        self.assertEqual(page.window.height, 720)
 
     def test_hud_uses_valid_flet_constructor_arguments(self):
         hud_path = Path(__file__).parents[1] / "src" / "ui" / "gui" / "hud.py"

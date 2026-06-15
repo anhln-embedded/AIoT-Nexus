@@ -12,6 +12,32 @@ export XDG_RUNTIME_DIR="${RUNTIME_DIR}"
 export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=${RUNTIME_DIR}/bus}"
 export AIOT_IS_PI="true"
 export FLET_DESKTOP_FLAVOR="full"
+export NO_AT_BRIDGE="1"
+
+configure_uart() {
+    if [[ -n "${AIOT_USE_UART:-}" ]]; then
+        return
+    fi
+
+    if [[ -n "${AIOT_PORT_PI:-}" && -e "${AIOT_PORT_PI}" ]]; then
+        export AIOT_USE_UART="true"
+        echo "[AIoT-Nexus] Using configured UART ${AIOT_PORT_PI}"
+        return
+    fi
+
+    local port
+    for port in /dev/serial0 /dev/ttyUSB0 /dev/ttyACM0; do
+        if [[ -e "${port}" ]]; then
+            export AIOT_PORT_PI="${port}"
+            export AIOT_USE_UART="true"
+            echo "[AIoT-Nexus] Auto-detected UART ${AIOT_PORT_PI}"
+            return
+        fi
+    done
+
+    export AIOT_USE_UART="false"
+    echo "[AIoT-Nexus] No UART device found; using hardware simulation."
+}
 
 wait_for_display() {
     local elapsed=0
@@ -49,4 +75,5 @@ if [[ ! -x "${PYTHON_BIN}" ]]; then
 fi
 
 wait_for_display
+configure_uart
 exec "${PYTHON_BIN}" "${MAIN_FILE}"

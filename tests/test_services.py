@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 import numpy as np
 
 from src.core.engine import AsyncCoreEngine
+from src.core import config
 from src.hardware.uart import AsyncHardwareController
 from src.mcp.client import AsyncMcpClient
 from src.vision.agent import AsyncVisionAgent
@@ -78,6 +79,10 @@ class VisionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class CoreTests(unittest.IsolatedAsyncioTestCase):
+    def test_pi_ui_mode_is_separate_from_uart_mode(self):
+        self.assertIsInstance(config.IS_PI, bool)
+        self.assertIsInstance(config.USE_REAL_UART, bool)
+
     async def test_start_stop_are_idempotent(self):
         core = AsyncCoreEngine()
         core.hw.connect = AsyncMock(return_value=True)

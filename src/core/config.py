@@ -15,13 +15,16 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 # Environment flag: False for Windows simulation, True for Raspberry Pi deployment
 IS_PI = _env_bool("AIOT_IS_PI", False)
+USE_REAL_UART = _env_bool("AIOT_USE_UART", IS_PI)
 
 # Serial settings
 PORT_WIN = os.getenv("AIOT_PORT_WIN", "COM3")
-PORT_PI = os.getenv("AIOT_PORT_PI", "/dev/ttyUSB0")
+PORT_PI = os.getenv("AIOT_PORT_PI", "/dev/serial0")
 BAUDRATE = int(os.getenv("AIOT_BAUDRATE", "115200"))
 CAMERA_INDEX = int(os.getenv("AIOT_CAMERA_INDEX", "0"))
 TELEMETRY_INTERVAL = float(os.getenv("AIOT_TELEMETRY_INTERVAL", "5.0"))
+DISPLAY_WIDTH = int(os.getenv("AIOT_DISPLAY_WIDTH", "1280"))
+DISPLAY_HEIGHT = int(os.getenv("AIOT_DISPLAY_HEIGHT", "800"))
 
 # LLM Providers Configuration
 LLM_PROVIDERS = {

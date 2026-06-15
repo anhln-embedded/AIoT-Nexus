@@ -10,6 +10,7 @@ from src.core.config import (
     PORT_PI,
     PORT_WIN,
     TELEMETRY_INTERVAL,
+    USE_REAL_UART,
 )
 from src.voice.agent import AsyncVoiceAgent
 from src.vision.agent import AsyncVisionAgent
@@ -18,8 +19,12 @@ from src.mcp.client import AsyncMcpClient
 
 class AsyncCoreEngine:
     def __init__(self):
-        port = PORT_PI if IS_PI else PORT_WIN
-        self.hw = AsyncHardwareController(is_pi=IS_PI, port=port, baudrate=BAUDRATE)
+        port = PORT_PI if USE_REAL_UART else PORT_WIN
+        self.hw = AsyncHardwareController(
+            is_pi=USE_REAL_UART,
+            port=port,
+            baudrate=BAUDRATE,
+        )
         self.vision = AsyncVisionAgent(camera_index=CAMERA_INDEX)
         self.voice = AsyncVoiceAgent()
         self.mcp = AsyncMcpClient(hw_controller=self.hw, vision_agent=self.vision)

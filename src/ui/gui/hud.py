@@ -2,10 +2,21 @@ import asyncio
 import base64
 import flet as ft
 from src.core.engine import AsyncCoreEngine
-from src.core.config import DEFAULT_PROVIDER, IS_PI, LLM_PROVIDERS
+from src.core.config import (
+    DEFAULT_PROVIDER,
+    DISPLAY_HEIGHT,
+    DISPLAY_WIDTH,
+    IS_PI,
+    LLM_PROVIDERS,
+)
 
 
-def configure_window(page: ft.Page, is_pi: bool = IS_PI) -> None:
+def configure_window(
+    page: ft.Page,
+    is_pi: bool = IS_PI,
+    width: int = DISPLAY_WIDTH,
+    height: int = DISPLAY_HEIGHT,
+) -> None:
     """Configures a kiosk window on Raspberry Pi and a dev window elsewhere."""
     if is_pi:
         page.padding = 0
@@ -16,13 +27,15 @@ def configure_window(page: ft.Page, is_pi: bool = IS_PI) -> None:
         page.window.maximizable = False
         return
 
-    page.padding = 10
-    page.window.width = 1024
-    page.window.height = 600
-    page.window.min_width = 960
-    page.window.min_height = 540
-    page.window.resizable = True
-    page.window.maximizable = True
+    page.padding = 0
+    page.window.width = width
+    page.window.height = height
+    page.window.min_width = width
+    page.window.min_height = height
+    page.window.max_width = width
+    page.window.max_height = height
+    page.window.resizable = False
+    page.window.maximizable = False
 
 async def main_hud(page: ft.Page):
     # Setup Page Metadata
