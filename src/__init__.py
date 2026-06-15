@@ -1,1 +1,1 @@
-# AIoT-Nexus Core Package
+# AIoT-Nexus Package

@@ -26,7 +26,7 @@ def configure_window(page: ft.Page, is_pi: bool = IS_PI) -> None:
 
 async def main_hud(page: ft.Page):
     # Setup Page Metadata
-    page.title = "AIoT-Nexus Core OS HUD"
+    page.title = "AIoT-Nexus"
     page.theme_mode = ft.ThemeMode.DARK
     page.bgcolor = "#0B0C10"
     configure_window(page)
