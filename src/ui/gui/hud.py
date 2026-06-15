@@ -115,12 +115,14 @@ async def main_hud(page: ft.Page):
     temp_card = ft.Card(
         bgcolor=BG_CARD,
         content=ft.Container(
-            padding=15,
+            padding=10,
             width=130,
+            alignment=ft.Alignment.CENTER,
             content=ft.Column(
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                 controls=[
                     ft.Text("NHIỆT ĐỘ", size=10, color="#C5C6C7", weight=ft.FontWeight.BOLD),
-                    ft.Row([ft.Icon(ft.Icons.THERMOSTAT, color="#FF5555"), temp_text], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+                    ft.Row([ft.Icon(ft.Icons.THERMOSTAT, color="#FF5555"), temp_text], alignment=ft.MainAxisAlignment.CENTER, spacing=5)
                 ]
             )
         )
@@ -129,41 +131,14 @@ async def main_hud(page: ft.Page):
     hum_card = ft.Card(
         bgcolor=BG_CARD,
         content=ft.Container(
-            padding=15,
+            padding=10,
             width=130,
+            alignment=ft.Alignment.CENTER,
             content=ft.Column(
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                 controls=[
                     ft.Text("ĐỘ ẨM PHÒNG", size=10, color="#C5C6C7", weight=ft.FontWeight.BOLD),
-                    ft.Row([ft.Icon(ft.Icons.WATER_DROP, color="#55AAFF"), hum_text], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
-                ]
-            )
-        )
-    )
-
-    # Actuators Status UI
-    relay1_switch = ft.Switch(value=False, active_color="#66FCF1", disabled=True)
-    relay2_switch = ft.Switch(value=False, active_color="#66FCF1", disabled=True)
-    rgb_led_indicator = ft.Container(
-        width=25, height=25, border_radius=5, bgcolor="black", border=ft.Border.all(1, "#C5C6C7")
-    )
-    
-    actuators_card = ft.Card(
-        bgcolor=BG_CARD,
-        content=ft.Container(
-            padding=12,
-            content=ft.Column(
-                spacing=5,
-                controls=[
-                    ft.Text("TRẠNG THÁI PHẦN CỨNG", size=10, color="#C5C6C7", weight=ft.FontWeight.BOLD),
-                    ft.Row([
-                        ft.Text("Relay 1", size=11), relay1_switch,
-                        ft.Text("Relay 2", size=11), relay2_switch,
-                    ], spacing=10),
-                    ft.Row([
-                        ft.Text("Đèn LED RGB:", size=11),
-                        rgb_led_indicator,
-                        ft.Text("MÔ PHỎNG: Windows 11" if not core.hw.is_pi else "PI PRODUCTION", size=9, color="#45A29E")
-                    ], spacing=10)
+                    ft.Row([ft.Icon(ft.Icons.WATER_DROP, color="#55AAFF"), hum_text], alignment=ft.MainAxisAlignment.CENTER, spacing=5)
                 ]
             )
         )
@@ -171,8 +146,8 @@ async def main_hud(page: ft.Page):
 
     # OpenCV Camera Vision Overlay Panel
     camera_placeholder = ft.Container(
-        width=260,
-        height=160,
+        width=640,
+        height=360,
         bgcolor="#0B0C10",
         border=ft.Border.all(2, "#45A29E"),
         border_radius=8,
@@ -181,16 +156,16 @@ async def main_hud(page: ft.Page):
             alignment=ft.MainAxisAlignment.CENTER,
             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
             controls=[
-                ft.Icon(ft.Icons.VIDEOCAM_OFF, size=35, color="#C5C6C7"),
-                ft.Text("CAMERA STANDBY", size=11, color="#C5C6C7", weight=ft.FontWeight.BOLD)
+                ft.Icon(ft.Icons.VIDEOCAM_OFF, size=45, color="#C5C6C7"),
+                ft.Text("CAMERA STANDBY", size=14, color="#C5C6C7", weight=ft.FontWeight.BOLD)
             ]
         )
     )
     
     camera_feed = ft.Image(
         src=b"",
-        width=260,
-        height=160,
+        width=640,
+        height=360,
         fit=ft.BoxFit.CONTAIN,
         visible=False
     )
@@ -198,61 +173,6 @@ async def main_hud(page: ft.Page):
     camera_panel = ft.Container(
         content=ft.Stack([camera_placeholder, camera_feed])
     )
-
-    # LLM Settings configuration panel
-    provider_dropdown = ft.Dropdown(
-        options=[
-            ft.dropdown.Option("gemini", "Google Gemini"),
-            ft.dropdown.Option("openai", "OpenAI GPT"),
-            ft.dropdown.Option("ollama", "Local Ollama"),
-        ],
-        value=DEFAULT_PROVIDER,
-        width=130,
-        height=40,
-        text_size=12,
-        color="#66FCF1",
-        border_color="#45A29E",
-    )
-    
-    api_key_input = ft.TextField(
-        label="LLM API Key",
-        password=True,
-        can_reveal_password=True,
-        width=220,
-        height=40,
-        text_size=11,
-        color="#66FCF1",
-        border_color="#45A29E",
-        hint_text="Nhập API Key ở đây...",
-        value=LLM_PROVIDERS[DEFAULT_PROVIDER]["api_key"]
-    )
-    
-    def on_provider_change(e):
-        prov = provider_dropdown.value
-        config = LLM_PROVIDERS.get(prov, {})
-        api_key_input.value = config.get("api_key", "")
-        if prov == "ollama":
-            api_key_input.label = "Ollama Endpoint"
-            api_key_input.value = config.get("api_base", "http://localhost:11434")
-            api_key_input.password = False
-        else:
-            api_key_input.label = "LLM API Key"
-            api_key_input.password = True
-        
-        apply_settings(None)
-        page.update()
-
-    provider_dropdown.on_change = on_provider_change
-
-    def apply_settings(e):
-        prov = provider_dropdown.value
-        val = api_key_input.value
-        if prov == "ollama":
-            core.update_llm_settings(prov, api_key="ollama", api_base=val)
-        else:
-            core.update_llm_settings(prov, api_key=val, api_base=None)
-
-    api_key_input.on_change = apply_settings
 
     # Debug / Status log console panel
     log_list = ft.ListView(
@@ -262,7 +182,7 @@ async def main_hud(page: ft.Page):
     )
     
     log_panel = ft.Container(
-        height=85,
+        expand=True,
         bgcolor="#0B0C10",
         border=ft.Border.all(1, "#1F2833"),
         border_radius=5,
@@ -306,6 +226,8 @@ async def main_hud(page: ft.Page):
             glow_indicator,
             status_label,
             trigger_button,
+            ft.Divider(height=10, color="transparent"),
+            ft.Row([temp_card, hum_card], spacing=10, alignment=ft.MainAxisAlignment.CENTER),
         ]
     )
 
@@ -313,12 +235,10 @@ async def main_hud(page: ft.Page):
         spacing=10,
         expand=True,
         controls=[
-            ft.Row([temp_card, hum_card], spacing=10),
-            actuators_card,
-            ft.Row([
-                provider_dropdown,
-                api_key_input
-            ], spacing=10),
+            ft.Container(
+                content=camera_panel,
+                alignment=ft.Alignment.CENTER,
+            ),
             ft.Text("BẢNG ĐIỀU KHIỂN HỆ THỐNG / LOGS", size=9, color="#45A29E", weight=ft.FontWeight.BOLD),
             log_panel
         ]
@@ -337,13 +257,6 @@ async def main_hud(page: ft.Page):
                 content=left_column
             ),
             ft.Container(
-                bgcolor="#1F2833",
-                border_radius=8,
-                padding=10,
-                alignment=ft.Alignment.CENTER,
-                content=camera_panel
-            ),
-            ft.Container(
                 expand=True,
                 bgcolor="#12161F",
                 border_radius=8,
@@ -356,7 +269,13 @@ async def main_hud(page: ft.Page):
     page.add(main_hud_layout)
     page.update()
 
-    apply_settings(None)
+    # Apply default LLM settings at startup
+    prov = DEFAULT_PROVIDER
+    config = LLM_PROVIDERS.get(prov, {})
+    if prov == "ollama":
+        core.update_llm_settings(prov, api_key="ollama", api_base=config.get("api_base", "http://localhost:11434"))
+    else:
+        core.update_llm_settings(prov, api_key=config.get("api_key", ""), api_base=None)
 
     async def ui_queue_listener():
         """Reads core events asynchronously and updates Flet controls."""
@@ -400,21 +319,6 @@ async def main_hud(page: ft.Page):
                 elif ev_type == "telemetry":
                     temp_text.value = f"{event.get('temp')} °C"
                     hum_text.value = f"{event.get('humidity')} %"
-                    
-                    relays = event.get("relays", {})
-                    relay1_switch.value = relays.get(1, False)
-                    relay2_switch.value = relays.get(2, False)
-                    
-                    led_color = event.get("led_color", "off").lower()
-                    color_mapping = {
-                        "red": "red",
-                        "green": "green",
-                        "blue": "blue",
-                        "yellow": "yellow",
-                        "white": "white",
-                        "off": "black"
-                    }
-                    rgb_led_indicator.bgcolor = color_mapping.get(led_color, "black")
                     
                 elif ev_type == "camera_frame":
                     camera_feed.src = base64.b64decode(str(ev_val))

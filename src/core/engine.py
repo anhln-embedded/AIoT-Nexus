@@ -1,5 +1,24 @@
 import asyncio
+import builtins
 from typing import Dict, Any, Optional
+
+def safe_print(*args, **kwargs):
+    try:
+        builtins.print(*args, **kwargs)
+    except UnicodeEncodeError:
+        new_args = []
+        for arg in args:
+            if isinstance(arg, str):
+                new_args.append(arg.encode('ascii', errors='backslashreplace').decode('ascii'))
+            else:
+                new_args.append(arg)
+        try:
+            builtins.print(*new_args, **kwargs)
+        except Exception:
+            pass
+
+print = safe_print
+
 
 from src.core.config import (
     BAUDRATE,

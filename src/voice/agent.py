@@ -1,7 +1,25 @@
 import asyncio
+import builtins
 import os
 import tempfile
 import speech_recognition as sr
+
+def safe_print(*args, **kwargs):
+    try:
+        builtins.print(*args, **kwargs)
+    except UnicodeEncodeError:
+        new_args = []
+        for arg in args:
+            if isinstance(arg, str):
+                new_args.append(arg.encode('ascii', errors='backslashreplace').decode('ascii'))
+            else:
+                new_args.append(arg)
+        try:
+            builtins.print(*new_args, **kwargs)
+        except Exception:
+            pass
+
+print = safe_print
 
 # Optional dependencies, catch import errors gracefully
 try:
