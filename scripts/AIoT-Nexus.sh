@@ -8,6 +8,7 @@ SCRIPT_NAME="$(basename -- "${BASH_SOURCE[0]}")"
 PROJECT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 PYTHON_BIN="${PROJECT_DIR}/.venv/bin/python"
 MAIN_FILE="${PROJECT_DIR}/main.py"
+LAUNCHER_FILE="${PROJECT_DIR}/scripts/launch-pi.sh"
 RUN_USER="${SUDO_USER:-${USER}}"
 RUN_GROUP="$(id -gn "${RUN_USER}")"
 RUN_UID="$(id -u "${RUN_USER}")"
@@ -63,6 +64,13 @@ install_service() {
         exit 1
     fi
 
+    if [[ ! -f "${LAUNCHER_FILE}" ]]; then
+        echo "Missing Raspberry Pi launcher: ${LAUNCHER_FILE}" >&2
+        exit 1
+    fi
+
+    chmod +x "${LAUNCHER_FILE}"
+
     sudo tee "${SERVICE_FILE}" >/dev/null <<EOF
 [Unit]
 Description=AIoT-Nexus
@@ -77,11 +85,10 @@ WorkingDirectory=${PROJECT_DIR}
 EnvironmentFile=-${PROJECT_DIR}/.env
 Environment=AIOT_IS_PI=true
 Environment=FLET_DESKTOP_FLAVOR=full
-Environment=DISPLAY=:0
-Environment=WAYLAND_DISPLAY=wayland-0
 Environment=XDG_RUNTIME_DIR=/run/user/${RUN_UID}
-Environment=XAUTHORITY=${RUN_HOME}/.Xauthority
-ExecStart=${PYTHON_BIN} ${MAIN_FILE}
+Environment=HOME=${RUN_HOME}
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${RUN_UID}/bus
+ExecStart=${LAUNCHER_FILE}
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=20
