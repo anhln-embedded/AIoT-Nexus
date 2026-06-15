@@ -195,3 +195,17 @@ class AsyncCoreEngine:
         self.api_key = api_key
         self.api_base = api_base
         print(f"Updated dynamic LLM config: Provider={provider}, Model={self._get_selected_model_string()}")
+
+    async def set_camera_enabled(self, enabled: bool):
+        """Toggles the camera enabled state dynamically."""
+        await self.vision.set_enabled(enabled)
+        await self.log_to_ui(f"Hệ thống: Đã {'bật' if enabled else 'tắt'} camera.")
+
+    async def update_camera_index(self, index: int):
+        """Updates the camera index dynamically."""
+        await self.vision.update_camera_index(index)
+        await self.log_to_ui(f"Hệ thống: Thiết lập sử dụng Camera {index}.")
+
+    async def get_available_cameras(self) -> list[int]:
+        """Queries the hardware for available camera indexes."""
+        return await self.vision.get_available_cameras()

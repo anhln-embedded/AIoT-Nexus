@@ -47,6 +47,9 @@ async def main_hud(page: ft.Page):
     # Initialize Core Application Engine
     core = AsyncCoreEngine()
     
+    # Detect available cameras dynamically from hardware
+    available_cameras = await core.get_available_cameras()
+    
     # --- Custom Styling Tokens ---
     BG_CARD = "#1F2833"
     BORDER_GLOW = "#45A29E"
@@ -145,6 +148,9 @@ async def main_hud(page: ft.Page):
     )
 
     # OpenCV Camera Vision Overlay Panel
+    camera_placeholder_icon = ft.Icon(ft.Icons.VIDEOCAM_OFF, size=45, color="#C5C6C7")
+    camera_placeholder_text = ft.Text("CAMERA STANDBY", size=14, color="#C5C6C7", weight=ft.FontWeight.BOLD)
+
     camera_placeholder = ft.Container(
         width=640,
         height=360,
@@ -152,12 +158,13 @@ async def main_hud(page: ft.Page):
         border=ft.Border.all(2, "#45A29E"),
         border_radius=8,
         alignment=ft.Alignment.CENTER,
+        visible=not core.vision.is_enabled,
         content=ft.Column(
             alignment=ft.MainAxisAlignment.CENTER,
             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
             controls=[
-                ft.Icon(ft.Icons.VIDEOCAM_OFF, size=45, color="#C5C6C7"),
-                ft.Text("CAMERA STANDBY", size=14, color="#C5C6C7", weight=ft.FontWeight.BOLD)
+                camera_placeholder_icon,
+                camera_placeholder_text
             ]
         )
     )
@@ -167,12 +174,114 @@ async def main_hud(page: ft.Page):
         width=640,
         height=360,
         fit=ft.BoxFit.CONTAIN,
-        visible=False
+        visible=core.vision.is_enabled
+    )
+    
+    fps_text = ft.Text("FPS: 0.0", size=10, color="#66FCF1", weight=ft.FontWeight.BOLD)
+    fps_container = ft.Container(
+        content=fps_text,
+        bgcolor=ft.Colors.with_opacity(0.6, "#0B0C10"),
+        padding=4,
+        border_radius=4,
+        left=10,
+        top=10,
+        visible=core.vision.is_enabled
     )
     
     camera_panel = ft.Container(
-        content=ft.Stack([camera_placeholder, camera_feed])
+        content=ft.Stack([camera_placeholder, camera_feed, fps_container])
     )
+
+    camera_title_text = ft.Text("THIẾT LẬP CAMERA:", size=11, color="#C5C6C7", weight=ft.FontWeight.BOLD)
+    camera_source_text = ft.Text("Nguồn:", size=11, color="#C5C6C7")
+
+    # Camera selection and toggle controls
+    async def on_camera_change(e):
+        try:
+            val = camera_dropdown.value
+            idx = val.split()[-1] if val else "0"
+            await core.update_camera_index(int(idx))
+            if not camera_switch.value:
+                camera_placeholder_text.value = f"CAMERA DISABLED (Camera {idx})"
+            else:
+                camera_placeholder_text.value = f"CAMERA STANDBY (Camera {idx})"
+            page.update()
+        except Exception as ex:
+            print(f"Error updating camera index: {ex}")
+
+    async def on_camera_switch_change(e):
+        try:
+            enabled = camera_switch.value
+            await core.set_camera_enabled(enabled)
+            val = camera_dropdown.value
+            idx = val.split()[-1] if val else "0"
+            if not enabled:
+                camera_placeholder_text.value = f"CAMERA DISABLED (Camera {idx})"
+                camera_placeholder_text.color = "#FF5555"
+                camera_placeholder_icon.color = "#FF5555"
+                camera_feed.visible = False
+                camera_placeholder.visible = True
+                fps_container.visible = False
+            else:
+                camera_placeholder_text.value = f"CAMERA STANDBY (Camera {idx})"
+                camera_placeholder_text.color = "#C5C6C7"
+                camera_placeholder_icon.color = "#C5C6C7"
+                camera_placeholder.visible = False
+                camera_feed.visible = True
+                fps_container.visible = True
+            page.update()
+        except Exception as ex:
+            print(f"Error toggling camera enabled state: {ex}")
+
+    camera_dropdown = ft.Dropdown(
+        options=[
+            ft.dropdown.Option(f"Camera {idx}")
+            for idx in available_cameras
+        ],
+        value=f"Camera {core.vision.camera_index}" if core.vision.camera_index in available_cameras else f"Camera {available_cameras[0]}",
+        width=110,
+        height=48,
+        text_size=12,
+        color="#66FCF1",
+        border_color="#45A29E",
+        focused_border_color="#66FCF1",
+    )
+    camera_dropdown.on_change = on_camera_change
+
+    camera_switch = ft.Switch(
+        label="Bật Camera",
+        value=core.vision.is_enabled,
+        active_color="#66FCF1",
+    )
+    camera_switch.on_change = on_camera_switch_change
+
+    camera_controls = ft.Container(
+        content=ft.Row(
+            controls=[
+                ft.Row([
+                    ft.Icon(ft.Icons.VIDEOCAM, color="#66FCF1", size=18),
+                    camera_title_text,
+                ], spacing=5, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Row([
+                    camera_source_text,
+                    camera_dropdown,
+                ], spacing=5, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                camera_switch,
+            ],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        ),
+        width=640,
+        bgcolor="#1F2833",
+        border_radius=8,
+        padding=ft.Padding.symmetric(horizontal=15, vertical=8),
+        border=ft.Border.all(1, "#45A29E"),
+    )
+
+    # Initialize dynamic titles based on initial selection
+    val = camera_dropdown.value
+    initial_idx = val.split()[-1] if val else "0"
+    camera_placeholder_text.value = f"CAMERA STANDBY (Camera {initial_idx})"
 
     # Debug / Status log console panel
     log_list = ft.ListView(
@@ -239,6 +348,10 @@ async def main_hud(page: ft.Page):
                 content=camera_panel,
                 alignment=ft.Alignment.CENTER,
             ),
+            ft.Container(
+                content=camera_controls,
+                alignment=ft.Alignment.CENTER,
+            ),
             ft.Text("BẢNG ĐIỀU KHIỂN HỆ THỐNG / LOGS", size=9, color="#45A29E", weight=ft.FontWeight.BOLD),
             log_panel
         ]
@@ -292,8 +405,19 @@ async def main_hud(page: ft.Page):
                         state_icon.name = ft.Icons.MIC
                         state_icon.color = "#66FCF1"
                         glow_indicator.border.color = "#66FCF1"
-                        camera_feed.visible = False
-                        camera_placeholder.visible = True
+                        if camera_switch.value:
+                            camera_placeholder.visible = False
+                            camera_feed.visible = True
+                            fps_container.visible = True
+                        else:
+                            camera_feed.visible = False
+                            camera_placeholder.visible = True
+                            fps_container.visible = False
+                            val = camera_dropdown.value
+                            idx = val.split()[-1] if val else "0"
+                            camera_placeholder_text.value = f"CAMERA DISABLED (Camera {idx})"
+                            camera_placeholder_text.color = "#FF5555"
+                            camera_placeholder_icon.color = "#FF5555"
                     elif ev_val == "LISTENING":
                         status_label.value = "Đang lắng nghe..."
                         status_label.color = "#00FF00"
@@ -321,9 +445,10 @@ async def main_hud(page: ft.Page):
                     hum_text.value = f"{event.get('humidity')} %"
                     
                 elif ev_type == "camera_frame":
-                    camera_feed.src = base64.b64decode(str(ev_val))
-                    camera_placeholder.visible = False
-                    camera_feed.visible = True
+                    if camera_switch.value:
+                        camera_feed.src = base64.b64decode(str(ev_val))
+                        camera_placeholder.visible = False
+                        camera_feed.visible = True
 
                 page.update()
                 core.ui_queue.task_done()
@@ -332,15 +457,50 @@ async def main_hud(page: ft.Page):
                 print(f"UI listener error: {e}")
             await asyncio.sleep(0.05)
 
+    async def camera_streamer_loop():
+        import cv2
+        import time
+        last_time = time.time()
+        frame_count = 0
+        while core.is_running:
+            try:
+                if core.state == "IDLE" and camera_switch.value:
+                    frame, is_mock = await core.vision.get_raw_frame()
+                    _, buffer = cv2.imencode('.jpg', frame)
+                    camera_feed.src = buffer.tobytes()
+                    camera_placeholder.visible = False
+                    camera_feed.visible = True
+                    
+                    frame_count += 1
+                    current_time = time.time()
+                    elapsed = current_time - last_time
+                    if elapsed >= 1.0:
+                        fps = frame_count / elapsed
+                        fps_text.value = f"FPS: {fps:.1f}"
+                        fps_container.visible = True
+                        frame_count = 0
+                        last_time = current_time
+                    
+                    page.update()
+                else:
+                    if fps_container.visible:
+                        fps_container.visible = False
+                        page.update()
+            except Exception as e:
+                print(f"Camera stream error: {e}")
+            await asyncio.sleep(0.04)
+
     # Start core engine and spawn tasks
     await core.start()
     
     pulse_task = asyncio.create_task(pulse_indicator())
     listener_task = asyncio.create_task(ui_queue_listener())
+    streamer_task = asyncio.create_task(camera_streamer_loop())
 
     async def cleanup(e):
         await core.stop()
         pulse_task.cancel()
         listener_task.cancel()
+        streamer_task.cancel()
         
     page.on_close = cleanup

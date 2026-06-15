@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 import base64
 import time
+import threading
 
 class AsyncVisionAgent:
     def __init__(self, camera_index: int = 0):
@@ -12,7 +13,17 @@ class AsyncVisionAgent:
         cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
         self.face_cascade = cv2.CascadeClassifier(cascade_path)
         self.is_streaming = False
+        self.is_enabled = True
         self._camera_lock = asyncio.Lock()
+        
+        # Background capture thread fields
+        self.latest_frame = None
+        self.latest_is_mock = True
+        self.active_camera_index = camera_index
+        self.frame_lock = threading.Lock()
+        self.thread_running = True
+        self.cap_thread = threading.Thread(target=self._capture_loop, daemon=True)
+        self.cap_thread.start()
 
     def _open_camera(self):
         """Attempts to open the hardware camera. Returns True if successful."""
@@ -30,44 +41,125 @@ class AsyncVisionAgent:
     def _close_camera(self):
         """Closes the camera resource."""
         try:
-            if self.cap is not None:
-                if self.cap.isOpened():
-                    self.cap.release()
-                self.cap = None
+            if not self.thread_running:
+                if self.cap is not None:
+                    if self.cap.isOpened():
+                        self.cap.release()
+                    self.cap = None
         except Exception as e:
             print(f"Error closing camera: {e}")
 
+    def _capture_loop(self):
+        """Dedicated background thread loop to read frames from the camera."""
+        while self.thread_running:
+            if not self.is_enabled:
+                if self.cap is not None:
+                    try:
+                        self.cap.release()
+                    except Exception:
+                        pass
+                    self.cap = None
+                
+                # generate mock frame for disabled state
+                frame = np.zeros((480, 640, 3), dtype=np.uint8)
+                frame[:, :] = (30, 20, 20)
+                cv2.line(frame, (320, 0), (320, 480), (50, 50, 50), 1)
+                cv2.line(frame, (0, 240), (640, 240), (50, 50, 50), 1)
+                cv2.putText(frame, "CAMERA DISABLED", (20, 40),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                cv2.putText(frame, f"Time: {time.strftime('%H:%M:%S')}", (20, 70),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
+                with self.frame_lock:
+                    self.latest_frame = frame
+                    self.latest_is_mock = True
+                time.sleep(0.1)
+                continue
+
+            # Handle camera index change
+            if self.active_camera_index != self.camera_index:
+                if self.cap is not None:
+                    try:
+                        self.cap.release()
+                    except Exception:
+                        pass
+                    self.cap = None
+                self.active_camera_index = self.camera_index
+
+            # Try to open/read camera
+            opened = False
+            try:
+                if self.cap is None or not self.cap.isOpened():
+                    backend = cv2.CAP_DSHOW if os.name == "nt" else cv2.CAP_ANY
+                    self.cap = cv2.VideoCapture(self.camera_index, backend)
+                    self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                    self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                opened = self.cap.isOpened()
+            except Exception:
+                opened = False
+
+            if opened:
+                try:
+                    ret, frame = self.cap.read()
+                    if ret and frame is not None:
+                        with self.frame_lock:
+                            self.latest_frame = frame.copy()
+                            self.latest_is_mock = False
+                        time.sleep(0.01)
+                        continue
+                except Exception:
+                    pass
+
+            # If opening or reading failed, generate mock frame
+            frame = np.zeros((480, 640, 3), dtype=np.uint8)
+            frame[:, :] = (30, 20, 20)
+            cv2.line(frame, (320, 0), (320, 480), (50, 50, 50), 1)
+            cv2.line(frame, (0, 240), (640, 240), (50, 50, 50), 1)
+            cv2.putText(frame, "CAMERA SIMULATION MODE", (20, 40),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 180, 255), 2)
+            cv2.putText(frame, f"Time: {time.strftime('%H:%M:%S')}", (20, 70),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
+            with self.frame_lock:
+                self.latest_frame = frame
+                self.latest_is_mock = True
+            time.sleep(0.033)
+
     def _grab_frame(self):
-        """Grabs a frame from the camera, or generates a mock frame if no camera is available."""
-        if self._open_camera():
-            ret, frame = self.cap.read()
-            if ret and frame is not None:
-                return frame, False
+        """Grabs the latest frame from the background capture loop cache."""
+        with self.frame_lock:
+            if self.latest_frame is not None:
+                return self.latest_frame.copy(), self.latest_is_mock
         
         mock_frame = np.zeros((480, 640, 3), dtype=np.uint8)
         mock_frame[:, :] = (30, 20, 20)
-        
-        cv2.line(mock_frame, (320, 0), (320, 480), (50, 50, 50), 1)
-        cv2.line(mock_frame, (0, 240), (640, 240), (50, 50, 50), 1)
-        cv2.putText(mock_frame, "CAMERA SIMULATION MODE", (20, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 180, 255), 2)
-        cv2.putText(mock_frame, f"Time: {time.strftime('%H:%M:%S')}", (20, 70),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
-        
         return mock_frame, True
 
     async def get_raw_frame(self):
         """Asynchronously retrieves a single frame (camera or mock)."""
-        loop = asyncio.get_running_loop()
-        async with self._camera_lock:
-            frame, is_mock = await loop.run_in_executor(None, self._grab_frame)
-            return frame, is_mock
+        return self._grab_frame()
+
+    async def set_enabled(self, enabled: bool):
+        """Enables or disables camera polling."""
+        self.is_enabled = enabled
+        self.is_streaming = enabled
+
+    async def update_camera_index(self, index: int):
+        """Changes camera hardware source index dynamically."""
+        self.camera_index = index
 
     async def close(self):
         """Releases the camera without blocking the event loop."""
-        async with self._camera_lock:
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, self._close_camera)
+        self.is_streaming = False
+        self.thread_running = False
+        if self.cap_thread is not None:
+            self.cap_thread.join(timeout=0.5)
+            self.cap_thread = None
+        
+        if self.cap is not None:
+            try:
+                self.cap.release()
+            except Exception:
+                pass
+            self.cap = None
 
     async def detect_faces(self) -> tuple[dict, str]:
         """
@@ -216,3 +308,25 @@ class AsyncVisionAgent:
 
         async with self._camera_lock:
             return await loop.run_in_executor(None, _process)
+
+    @staticmethod
+    def _detect_cameras():
+        import os
+        available = []
+        backend = cv2.CAP_DSHOW if os.name == "nt" else cv2.CAP_ANY
+        for i in range(5):
+            try:
+                cap = cv2.VideoCapture(i, backend)
+                if cap is not None and cap.isOpened():
+                    cap.release()
+                    available.append(i)
+            except Exception:
+                pass
+        if not available:
+            available = [0]
+        return available
+
+    async def get_available_cameras(self) -> list[int]:
+        """Asynchronously queries the hardware for available camera indexes."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._detect_cameras)
