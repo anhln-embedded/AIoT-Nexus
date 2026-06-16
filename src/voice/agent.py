@@ -1,6 +1,9 @@
 import asyncio
 import builtins
+import json
 import os
+import subprocess
+import sys
 import tempfile
 import speech_recognition as sr
 
@@ -11,6 +14,7 @@ WINDOWS_INPUT_ALIAS_NAMES = (
     "primary sound driver",
 )
 NON_MIC_INPUT_NAMES = ("stereo mix", "speakers", "headphones", "output")
+MIC_TEST_FRAMES_PER_BUFFER = 1024
 
 
 def safe_print(*args, **kwargs):
@@ -38,7 +42,6 @@ except ImportError:
 
 try:
     import pygame
-    pygame.mixer.init()
 except Exception:
     pygame = None
 
@@ -61,8 +64,11 @@ class AsyncVoiceAgent:
     @property
     def microphone(self):
         if self._microphone is None:
+            device_index = self._get_effective_microphone_index()
+            if device_index is None:
+                raise RuntimeError("No usable microphone input device was found.")
             self._microphone = sr.Microphone(
-                device_index=self._get_effective_microphone_index()
+                device_index=device_index
             )
         return self._microphone
 
@@ -100,7 +106,7 @@ class AsyncVoiceAgent:
         return True
 
     @classmethod
-    def _input_devices_from_audio(cls, audio):
+    def _input_devices_from_audio(cls, audio, sample_format=None):
         devices = []
         for index in range(audio.get_device_count()):
             info = dict(audio.get_device_info_by_index(index))
@@ -109,9 +115,50 @@ class AsyncVoiceAgent:
                 info.get("name", f"Microphone {index}")
             )
             info["hostApiName"] = cls._get_host_api_name(audio, info.get("hostApi"))
-            if cls._is_user_selectable_input(info):
+            if (
+                cls._is_user_selectable_input(info)
+                and cls._can_open_input_device(audio, info, sample_format)
+            ):
                 devices.append(info)
         return devices
+
+    @staticmethod
+    def _device_sample_rate(device):
+        try:
+            sample_rate = int(float(device.get("defaultSampleRate", 16000)))
+            if sample_rate > 0:
+                return sample_rate
+        except Exception:
+            pass
+        return 16000
+
+    @classmethod
+    def _can_open_input_device(cls, audio, device, sample_format=None):
+        open_stream = getattr(audio, "open", None)
+        if open_stream is None or sample_format is None:
+            return True
+
+        stream = None
+        try:
+            stream = open_stream(
+                format=sample_format,
+                channels=1,
+                rate=cls._device_sample_rate(device),
+                input=True,
+                input_device_index=int(device["index"]),
+                frames_per_buffer=MIC_TEST_FRAMES_PER_BUFFER,
+            )
+            return True
+        except Exception as e:
+            name = cls._clean_microphone_name(device.get("name", device.get("index")))
+            print(f"Skipping unavailable microphone {name}: {e}")
+            return False
+        finally:
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
 
     @staticmethod
     def _prefer_host_api(devices):
@@ -150,12 +197,16 @@ class AsyncVoiceAgent:
 
     @staticmethod
     def list_microphones():
+        devices = AsyncVoiceAgent._list_microphones_in_subprocess()
+        if devices is not None:
+            return devices
+
         try:
             import pyaudio
 
             audio = pyaudio.PyAudio()
             try:
-                devices = AsyncVoiceAgent._input_devices_from_audio(audio)
+                devices = AsyncVoiceAgent._input_devices_from_audio(audio, pyaudio.paInt16)
                 devices = AsyncVoiceAgent._prefer_host_api(devices)
                 devices = AsyncVoiceAgent._dedupe_devices(devices)
                 return [
@@ -178,23 +229,160 @@ class AsyncVoiceAgent:
             except Exception:
                 return []
 
+    @staticmethod
+    def _list_microphones_in_subprocess():
+        probe_script = r"""
+import json
+
+WINDOWS_LOW_LEVEL_AUDIO_APIS = ("wdm-ks",)
+WINDOWS_INPUT_ALIAS_NAMES = (
+    "microsoft sound mapper",
+    "primary sound capture driver",
+    "primary sound driver",
+)
+NON_MIC_INPUT_NAMES = ("stereo mix", "speakers", "headphones", "output")
+MIC_TEST_FRAMES_PER_BUFFER = 1024
+
+
+def clean_name(name):
+    return " ".join(str(name or "").replace("\r", " ").replace("\n", " ").split())
+
+
+def host_api_name(audio, host_api_index):
+    try:
+        return audio.get_host_api_info_by_index(host_api_index).get("name", "")
+    except Exception:
+        return ""
+
+
+def is_user_selectable_input(device):
+    name = clean_name(device.get("name", ""))
+    lowered_name = name.lower()
+    if not name or int(device.get("maxInputChannels", 0)) <= 0:
+        return False
+    if any(alias in lowered_name for alias in WINDOWS_INPUT_ALIAS_NAMES):
+        return False
+    if any(alias in lowered_name for alias in NON_MIC_INPUT_NAMES):
+        return False
+    return True
+
+
+def device_sample_rate(device):
+    try:
+        sample_rate = int(float(device.get("defaultSampleRate", 16000)))
+        if sample_rate > 0:
+            return sample_rate
+    except Exception:
+        pass
+    return 16000
+
+
+def can_open_input_device(audio, device, sample_format):
+    stream = None
+    try:
+        stream = audio.open(
+            format=sample_format,
+            channels=1,
+            rate=device_sample_rate(device),
+            input=True,
+            input_device_index=int(device["index"]),
+            frames_per_buffer=MIC_TEST_FRAMES_PER_BUFFER,
+        )
+        return True
+    except Exception:
+        return False
+    finally:
+        if stream is not None:
+            try:
+                stream.close()
+            except Exception:
+                pass
+
+
+def prefer_host_api(devices):
+    if not devices:
+        return []
+    wasapi_devices = [
+        device
+        for device in devices
+        if "wasapi" in device.get("hostApiName", "").lower()
+    ]
+    if wasapi_devices:
+        return wasapi_devices
+    high_level_devices = [
+        device
+        for device in devices
+        if not any(
+            api in device.get("hostApiName", "").lower()
+            for api in WINDOWS_LOW_LEVEL_AUDIO_APIS
+        )
+    ]
+    return high_level_devices or devices
+
+
+def dedupe_devices(devices):
+    seen = set()
+    unique = []
+    for device in devices:
+        key = clean_name(device.get("name", "")).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(device)
+    return unique
+
+
+try:
+    import pyaudio
+
+    audio = pyaudio.PyAudio()
+    try:
+        devices = []
+        for index in range(audio.get_device_count()):
+            info = dict(audio.get_device_info_by_index(index))
+            info["index"] = int(info.get("index", index))
+            info["name"] = clean_name(info.get("name", f"Microphone {index}"))
+            info["hostApiName"] = host_api_name(audio, info.get("hostApi"))
+            if is_user_selectable_input(info) and can_open_input_device(audio, info, pyaudio.paInt16):
+                devices.append(info)
+        devices = prefer_host_api(devices)
+        devices = dedupe_devices(devices)
+        print(json.dumps([(device["index"], device["name"]) for device in devices]))
+    finally:
+        audio.terminate()
+except Exception:
+    print("[]")
+"""
+        try:
+            result = subprocess.run(
+                [sys.executable, "-c", probe_script],
+                capture_output=True,
+                text=True,
+                timeout=8,
+                check=False,
+            )
+        except Exception as e:
+            print(f"Microphone probe subprocess failed to run: {e}")
+            return None
+
+        if result.returncode != 0:
+            stderr = (result.stderr or "").strip().splitlines()
+            detail = stderr[-1] if stderr else f"exit code {result.returncode}"
+            print(f"Microphone probe subprocess failed: {detail}")
+            return []
+
+        try:
+            payload = json.loads((result.stdout or "[]").strip() or "[]")
+            return [
+                (int(index), AsyncVoiceAgent._clean_microphone_name(name))
+                for index, name in payload
+            ]
+        except Exception as e:
+            print(f"Microphone probe subprocess returned invalid output: {e}")
+            return []
+
     @classmethod
     def get_default_microphone_info(cls):
-        try:
-            import pyaudio
-
-            audio = pyaudio.PyAudio()
-            try:
-                info = audio.get_default_input_device_info()
-                if int(info.get("maxInputChannels", 0)) > 0 and cls._is_user_selectable_input(info):
-                    return (
-                        int(info["index"]),
-                        cls._clean_microphone_name(info.get("name", "")),
-                    )
-            finally:
-                audio.terminate()
-        except Exception as e:
-            print(f"Failed to resolve default microphone: {e}")
         devices = cls.list_microphones()
         if devices:
             return devices[0]

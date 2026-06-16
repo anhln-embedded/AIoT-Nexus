@@ -153,6 +153,73 @@ class VoiceTests(unittest.TestCase):
 
         microphone.assert_called_once_with(device_index=7)
 
+    def test_microphone_listing_filters_devices_that_cannot_open(self):
+        class FakeStream:
+            def close(self):
+                pass
+
+        class FakeAudio:
+            devices = [
+                {
+                    "index": 0,
+                    "name": "Broken USB Mic",
+                    "hostApi": 0,
+                    "maxInputChannels": 1,
+                    "defaultSampleRate": 16000,
+                },
+                {
+                    "index": 1,
+                    "name": "Working USB Mic",
+                    "hostApi": 0,
+                    "maxInputChannels": 1,
+                    "defaultSampleRate": 16000,
+                },
+            ]
+
+            def get_device_count(self):
+                return len(self.devices)
+
+            def get_device_info_by_index(self, index):
+                return self.devices[index]
+
+            def get_host_api_info_by_index(self, index):
+                return {"name": "ALSA"}
+
+            def open(self, input_device_index, **kwargs):
+                if input_device_index == 0:
+                    raise OSError("Invalid input device")
+                return FakeStream()
+
+        devices = AsyncVoiceAgent._input_devices_from_audio(
+            FakeAudio(),
+            sample_format=object(),
+        )
+
+        self.assertEqual(
+            [(device["index"], device["name"]) for device in devices],
+            [(1, "Working USB Mic")],
+        )
+
+    def test_default_microphone_uses_first_available_listed_device(self):
+        with patch.object(
+            AsyncVoiceAgent,
+            "list_microphones",
+            return_value=[(2, "USB Mic"), (3, "Camera Mic")],
+        ):
+            self.assertEqual(
+                AsyncVoiceAgent.get_default_microphone_info(),
+                (2, "USB Mic"),
+            )
+
+    def test_microphone_subprocess_failure_returns_empty_list(self):
+        class FailedProbe:
+            returncode = 11
+            stderr = "segmentation fault"
+            stdout = ""
+
+        with patch("src.voice.agent.subprocess.run", return_value=FailedProbe()):
+            self.assertEqual(AsyncVoiceAgent._list_microphones_in_subprocess(), [])
+
 
 class CoreTests(unittest.IsolatedAsyncioTestCase):
     def test_pi_ui_mode_is_separate_from_uart_mode(self):
