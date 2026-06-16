@@ -18,12 +18,13 @@ class AsyncVisionAgent:
         self.cap = None
         cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
         self.face_cascade = cv2.CascadeClassifier(cascade_path)
-        self.is_streaming = True
-        self.is_enabled = True
+        self.is_streaming = False
+        self.is_enabled = False
         self.state_callback = None
         self.camera_view = None
         self.is_mirrored = False
         self._camera_lock = asyncio.Lock()
+        self._state_lock = asyncio.Lock()
         
         # Background capture thread fields
         self.latest_frame = None
@@ -206,25 +207,26 @@ class AsyncVisionAgent:
 
     async def set_enabled(self, enabled: bool):
         """Enables or disables camera polling."""
-        self.is_enabled = enabled
-        self.is_streaming = enabled
-        
-        if enabled:
-            # Start background capture thread if not running
-            self.start_streaming()
-        else:
-            # Stop capture thread and wait for it to join
-            self.thread_running = False
-            if self.cap_thread is not None:
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(None, self.cap_thread.join)
-                self.cap_thread = None
+        async with self._state_lock:
+            self.is_enabled = enabled
+            self.is_streaming = enabled
 
-        if self.state_callback:
-            if asyncio.iscoroutinefunction(self.state_callback):
-                await self.state_callback(enabled)
+            if enabled:
+                # Start background capture thread if not running
+                self.start_streaming()
             else:
-                self.state_callback(enabled)
+                # Stop capture thread and wait for it to join
+                self.thread_running = False
+                if self.cap_thread is not None:
+                    loop = asyncio.get_running_loop()
+                    await loop.run_in_executor(None, self.cap_thread.join)
+                    self.cap_thread = None
+
+            if self.state_callback:
+                if asyncio.iscoroutinefunction(self.state_callback):
+                    await self.state_callback(enabled)
+                else:
+                    self.state_callback(enabled)
 
     async def update_camera_index(self, index: int):
         """Changes camera hardware source index dynamically."""

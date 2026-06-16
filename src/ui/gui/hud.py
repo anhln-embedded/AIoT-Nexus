@@ -274,11 +274,31 @@ async def main_hud(page: ft.Page):
     )
     
     camera_panel = ft.Container(
-        content=ft.Stack([camera_placeholder, camera_feed, fps_container])
+        width=640,
+        height=360,
+        alignment=ft.Alignment.CENTER,
+        content=ft.Stack(
+            [camera_placeholder, camera_feed, fps_container],
+            alignment=ft.Alignment.CENTER,
+        ),
+    )
+    camera_panel_shell = ft.Container(
+        content=camera_panel,
+        width=640,
+        height=360 if core.vision.is_enabled else 0,
+        alignment=ft.Alignment.TOP_CENTER,
+        clip_behavior=ft.ClipBehavior.HARD_EDGE,
+        opacity=1.0 if core.vision.is_enabled else 0.0,
+        offset=(0, 0) if core.vision.is_enabled else (0, -0.06),
+        ignore_interactions=not core.vision.is_enabled,
+        animate_size=ft.Animation(420, ft.AnimationCurve.EASE_IN_OUT_CUBIC),
+        animate_opacity=ft.Animation(260, ft.AnimationCurve.EASE_IN_OUT),
+        animate_offset=ft.Animation(420, ft.AnimationCurve.EASE_IN_OUT_CUBIC),
     )
 
     camera_view = CameraViewWrapper(camera_feed, fps_text)
     core.vision.camera_view = camera_view
+    camera_requested_state = {"enabled": core.vision.is_enabled}
 
 
     camera_title_text = ft.Text("THIẾT LẬP CAMERA:", size=11, color="#C5C6C7", weight=ft.FontWeight.BOLD)
@@ -301,6 +321,13 @@ async def main_hud(page: ft.Page):
     async def on_camera_switch_change(e):
         try:
             enabled = camera_switch.value
+            camera_requested_state["enabled"] = enabled
+            apply_camera_layout(enabled)
+            camera_switch.update()
+            camera_panel_shell.update()
+            camera_feed.update()
+            fps_container.update()
+            page.update()
             await core.set_camera_enabled(enabled)
         except Exception as ex:
             print(f"Error toggling camera enabled state: {ex}")
@@ -370,6 +397,29 @@ async def main_hud(page: ft.Page):
     val = camera_dropdown.value
     initial_idx = val.split()[-1] if val else "0"
     camera_placeholder_text.value = f"CAMERA STANDBY (Camera {initial_idx})"
+
+    def apply_camera_layout(enabled: bool):
+        val = camera_dropdown.value
+        idx = val.split()[-1] if val else "0"
+        camera_panel_shell.height = 360 if enabled else 0
+        camera_panel_shell.opacity = 1.0 if enabled else 0.0
+        camera_panel_shell.offset = (0, 0) if enabled else (0, -0.06)
+        camera_panel_shell.ignore_interactions = not enabled
+        camera_feed.visible = enabled
+        fps_container.visible = enabled
+        camera_placeholder.visible = False
+        camera_switch.value = enabled
+        camera_switch.label = "TẮT CAMERA" if enabled else "BẬT CAMERA"
+        if enabled:
+            camera_placeholder_text.value = f"CAMERA STANDBY (Camera {idx})"
+            camera_placeholder_text.color = "#C5C6C7"
+            camera_placeholder_icon.color = "#C5C6C7"
+        else:
+            camera_placeholder_text.value = f"CAMERA DISABLED (Camera {idx})"
+            camera_placeholder_text.color = "#FF5555"
+            camera_placeholder_icon.color = "#FF5555"
+
+    apply_camera_layout(core.vision.is_enabled)
 
     # Conversation and system event panel
     chat_list = ft.ListView(
@@ -649,11 +699,9 @@ async def main_hud(page: ft.Page):
     right_column = ft.Column(
         spacing=10,
         expand=True,
+        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
         controls=[
-            ft.Container(
-                content=camera_panel,
-                alignment=ft.Alignment.CENTER,
-            ),
+            camera_panel_shell,
             ft.Container(
                 content=camera_controls,
                 alignment=ft.Alignment.CENTER,
@@ -717,19 +765,7 @@ async def main_hud(page: ft.Page):
                         state_icon.name = ft.Icons.MIC
                         state_icon.color = "#66FCF1"
                         glow_indicator.border.color = "#66FCF1"
-                        if camera_switch.value:
-                            camera_placeholder.visible = False
-                            camera_feed.visible = True
-                            fps_container.visible = True
-                        else:
-                            camera_feed.visible = False
-                            camera_placeholder.visible = True
-                            fps_container.visible = False
-                            val = camera_dropdown.value
-                            idx = val.split()[-1] if val else "0"
-                            camera_placeholder_text.value = f"CAMERA DISABLED (Camera {idx})"
-                            camera_placeholder_text.color = "#FF5555"
-                            camera_placeholder_icon.color = "#FF5555"
+                        apply_camera_layout(bool(camera_switch.value))
                     elif ev_val == "LISTENING":
                         status_label.value = "Đang lắng nghe..."
                         status_label.color = "#00FF00"
@@ -762,35 +798,27 @@ async def main_hud(page: ft.Page):
                     hum_text.value = f"{event.get('humidity')} %"
                     
                 elif ev_type == "camera_frame":
-                    if camera_switch.value:
+                    if camera_switch.value and core.vision.is_enabled:
                         camera_view.widget.src_base64 = str(ev_val)
+                        camera_panel_shell.height = 360
+                        camera_panel_shell.opacity = 1.0
+                        camera_panel_shell.offset = (0, 0)
+                        camera_panel_shell.ignore_interactions = False
                         camera_placeholder.visible = False
                         camera_feed.visible = True
+                        fps_container.visible = True
+                        camera_panel_shell.update()
                         camera_view.update()
                         camera_placeholder.update()
 
                 elif ev_type == "camera_state":
                     enabled = bool(ev_val)
-                    camera_switch.value = enabled
-                    camera_switch.label = "TẮT CAMERA" if enabled else "BẬT CAMERA"
-                    val = camera_dropdown.value
-                    idx = val.split()[-1] if val else "0"
-                    if not enabled:
-                        camera_placeholder_text.value = f"CAMERA DISABLED (Camera {idx})"
-                        camera_placeholder_text.color = "#FF5555"
-                        camera_placeholder_icon.color = "#FF5555"
-                        camera_feed.visible = False
-                        camera_placeholder.visible = True
-                        fps_container.visible = False
-                    else:
-                        camera_placeholder_text.value = f"CAMERA STANDBY (Camera {idx})"
-                        camera_placeholder_text.color = "#C5C6C7"
-                        camera_placeholder_icon.color = "#C5C6C7"
-                        camera_placeholder.visible = False
-                        camera_feed.visible = True
-                        fps_container.visible = True
-                    
+                    if enabled != camera_requested_state["enabled"]:
+                        core.ui_queue.task_done()
+                        continue
+                    apply_camera_layout(enabled)
                     camera_switch.update()
+                    camera_panel_shell.update()
                     camera_placeholder.update()
                     camera_feed.update()
                     fps_container.update()
@@ -811,12 +839,17 @@ async def main_hud(page: ft.Page):
             try:
                 if camera_switch.value:
                     b64_frame = await core.vision.get_preview_frame_base64()
-                    if b64_frame:
+                    if b64_frame and camera_switch.value and core.vision.is_enabled:
                         camera_view.widget.src_base64 = b64_frame
                         if not camera_feed.visible:
+                            camera_panel_shell.height = 360
+                            camera_panel_shell.opacity = 1.0
+                            camera_panel_shell.offset = (0, 0)
+                            camera_panel_shell.ignore_interactions = False
                             camera_placeholder.visible = False
                             camera_feed.visible = True
                             fps_container.visible = True
+                            camera_panel_shell.update()
                             camera_placeholder.update()
                             fps_container.update()
                         camera_view.update()

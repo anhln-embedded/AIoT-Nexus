@@ -1,4 +1,5 @@
 import asyncio
+import time
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -83,6 +84,41 @@ class VisionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["detected_color"], "Blue")
         self.assertTrue(encoded_frame)
+
+    async def test_camera_enable_waits_for_pending_stop(self):
+        vision = AsyncVisionAgent()
+        events = []
+        started = []
+
+        class SlowThread:
+            def join(self):
+                time.sleep(0.05)
+
+        async def state_callback(enabled):
+            events.append(enabled)
+
+        def fake_start_streaming():
+            started.append(True)
+            vision.is_streaming = True
+            vision.thread_running = True
+
+        vision.cap_thread = SlowThread()
+        vision.is_enabled = True
+        vision.is_streaming = True
+        vision.state_callback = state_callback
+        vision.start_streaming = fake_start_streaming
+
+        stop_task = asyncio.create_task(vision.set_enabled(False))
+        await asyncio.sleep(0)
+        start_task = asyncio.create_task(vision.set_enabled(True))
+
+        await asyncio.gather(stop_task, start_task)
+
+        self.assertTrue(vision.is_enabled)
+        self.assertTrue(vision.is_streaming)
+        self.assertTrue(vision.thread_running)
+        self.assertEqual(events, [False, True])
+        self.assertEqual(started, [True])
 
 
 class VoiceTests(unittest.TestCase):
