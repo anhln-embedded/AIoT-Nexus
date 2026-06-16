@@ -36,6 +36,11 @@ AIOT_DISPLAY_HEIGHT=800
 AIOT_CAMERA_INDEX=0
 AIOT_TELEMETRY_INTERVAL=5.0
 
+AIOT_CAMERA_PREVIEW_FPS=30
+AIOT_CAMERA_PREVIEW_WIDTH=640
+AIOT_CAMERA_PREVIEW_HEIGHT=360
+AIOT_CAMERA_JPEG_QUALITY=75
+
 AIOT_PORT_WIN=COM3
 AIOT_PORT_PI=/dev/serial0
 AIOT_BAUDRATE=115200
@@ -47,6 +52,13 @@ Important:
 - On Pi, the service sets `AIOT_IS_PI=true` automatically.
 - `AIOT_USE_UART=false` uses simulated hardware even on Pi.
 - If `AIOT_USE_UART` is unset on Pi, `launch-pi.sh` auto-detects `/dev/serial0`, `/dev/ttyUSB0`, then `/dev/ttyACM0`; if none exists, it falls back to simulation.
+
+Camera preview tuning:
+
+- `AIOT_CAMERA_PREVIEW_FPS` controls the UI preview render cadence. Use `30` on a capable Windows laptop; lower to `24` or `20` if the preview stutters.
+- `AIOT_CAMERA_PREVIEW_WIDTH` and `AIOT_CAMERA_PREVIEW_HEIGHT` control the JPEG preview size sent to Flet. The default `640x360` matches the HUD panel.
+- `AIOT_CAMERA_JPEG_QUALITY` controls preview JPEG quality from `1` to `100`. Use `75` for a good balance; lower it if CPU usage is high.
+- The HUD has a `SOI GƯƠNG` switch. It only flips the live preview horizontally; camera tool processing still uses the original frame.
 
 ## Run on Windows Laptop
 
