@@ -22,6 +22,7 @@ class AsyncVisionAgent:
         self.active_camera_index = camera_index
         self.frame_lock = threading.Lock()
         self.thread_running = True
+        self.last_open_attempt = 0.0
         self.cap_thread = threading.Thread(target=self._capture_loop, daemon=True)
         self.cap_thread.start()
 
@@ -87,15 +88,48 @@ class AsyncVisionAgent:
 
             # Try to open/read camera
             opened = False
-            try:
-                if self.cap is None or not self.cap.isOpened():
-                    backend = cv2.CAP_DSHOW if os.name == "nt" else cv2.CAP_ANY
-                    self.cap = cv2.VideoCapture(self.camera_index, backend)
-                    self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                    self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                opened = self.cap.isOpened()
-            except Exception:
-                opened = False
+            current_time = time.time()
+            if self.cap is None or not self.cap.isOpened():
+                if current_time - self.last_open_attempt >= 3.0:
+                    self.last_open_attempt = current_time
+                    save_fd = None
+                    null_fd = None
+                    try:
+                        try:
+                            import sys
+                            err_fd = sys.stderr.fileno()
+                            save_fd = os.dup(err_fd)
+                            null_fd = os.open(os.devnull, os.O_WRONLY)
+                            os.dup2(null_fd, err_fd)
+                        except Exception:
+                            pass
+                        
+                        backend = cv2.CAP_DSHOW if os.name == "nt" else cv2.CAP_ANY
+                        self.cap = cv2.VideoCapture(self.camera_index, backend)
+                        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                    except Exception:
+                        self.cap = None
+                    finally:
+                        if save_fd is not None:
+                            try:
+                                import sys
+                                err_fd = sys.stderr.fileno()
+                                os.dup2(save_fd, err_fd)
+                                os.close(save_fd)
+                            except Exception:
+                                pass
+                        if null_fd is not None:
+                            try:
+                                os.close(null_fd)
+                            except Exception:
+                                pass
+            
+            if self.cap is not None:
+                try:
+                    opened = self.cap.isOpened()
+                except Exception:
+                    opened = False
 
             if opened:
                 try:
@@ -312,16 +346,43 @@ class AsyncVisionAgent:
     @staticmethod
     def _detect_cameras():
         import os
+        import sys
+        
+        save_fd = None
+        null_fd = None
+        try:
+            err_fd = sys.stderr.fileno()
+            save_fd = os.dup(err_fd)
+            null_fd = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(null_fd, err_fd)
+        except Exception:
+            pass
+
         available = []
-        backend = cv2.CAP_DSHOW if os.name == "nt" else cv2.CAP_ANY
-        for i in range(5):
-            try:
-                cap = cv2.VideoCapture(i, backend)
-                if cap is not None and cap.isOpened():
-                    cap.release()
-                    available.append(i)
-            except Exception:
-                pass
+        try:
+            backend = cv2.CAP_DSHOW if os.name == "nt" else cv2.CAP_ANY
+            for i in range(5):
+                try:
+                    cap = cv2.VideoCapture(i, backend)
+                    if cap is not None and cap.isOpened():
+                        cap.release()
+                        available.append(i)
+                except Exception:
+                    pass
+        finally:
+            if save_fd is not None:
+                try:
+                    err_fd = sys.stderr.fileno()
+                    os.dup2(save_fd, err_fd)
+                    os.close(save_fd)
+                except Exception:
+                    pass
+            if null_fd is not None:
+                try:
+                    os.close(null_fd)
+                except Exception:
+                    pass
+
         if not available:
             available = [0]
         return available
