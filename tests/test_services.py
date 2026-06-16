@@ -12,6 +12,12 @@ from src.vision.agent import AsyncVisionAgent
 
 
 class FakeVision:
+    def __init__(self):
+        self.is_enabled = True
+
+    def set_enabled(self, enabled):
+        self.is_enabled = enabled
+
     async def detect_faces(self):
         return {"face_count": 1, "faces": [], "is_mocked_camera": True}, "frame"
 
