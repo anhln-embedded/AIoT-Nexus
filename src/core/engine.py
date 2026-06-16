@@ -276,5 +276,5 @@ class AsyncCoreEngine:
     async def update_microphone_index(self, index: int | None):
         """Updates the microphone input device used for STT."""
         self.voice.set_microphone_index(index)
-        label = "mặc định hệ thống" if index is None else f"Micro {index}"
+        label = self.voice.get_microphone_label(index)
         await self.log_to_ui(f"Hệ thống: Thiết lập sử dụng {label}.")

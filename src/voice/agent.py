@@ -4,6 +4,15 @@ import os
 import tempfile
 import speech_recognition as sr
 
+WINDOWS_LOW_LEVEL_AUDIO_APIS = ("wdm-ks",)
+WINDOWS_INPUT_ALIAS_NAMES = (
+    "microsoft sound mapper",
+    "primary sound capture driver",
+    "primary sound driver",
+)
+NON_MIC_INPUT_NAMES = ("stereo mix", "speakers", "headphones", "output")
+
+
 def safe_print(*args, **kwargs):
     try:
         builtins.print(*args, **kwargs)
@@ -52,13 +61,92 @@ class AsyncVoiceAgent:
     @property
     def microphone(self):
         if self._microphone is None:
-            self._microphone = sr.Microphone(device_index=self.microphone_index)
+            self._microphone = sr.Microphone(
+                device_index=self._get_effective_microphone_index()
+            )
         return self._microphone
 
     def set_microphone_index(self, index):
         self.microphone_index = index
         self._microphone = None
         self.is_calibrated = False
+
+    def _get_effective_microphone_index(self):
+        if self.microphone_index is not None:
+            return self.microphone_index
+        return self.get_default_microphone_index()
+
+    @staticmethod
+    def _clean_microphone_name(name):
+        return " ".join(str(name or "").replace("\r", " ").replace("\n", " ").split())
+
+    @staticmethod
+    def _get_host_api_name(audio, host_api_index):
+        try:
+            return audio.get_host_api_info_by_index(host_api_index).get("name", "")
+        except Exception:
+            return ""
+
+    @classmethod
+    def _is_user_selectable_input(cls, device):
+        name = cls._clean_microphone_name(device.get("name", ""))
+        lowered_name = name.lower()
+        if not name or int(device.get("maxInputChannels", 0)) <= 0:
+            return False
+        if any(alias in lowered_name for alias in WINDOWS_INPUT_ALIAS_NAMES):
+            return False
+        if any(alias in lowered_name for alias in NON_MIC_INPUT_NAMES):
+            return False
+        return True
+
+    @classmethod
+    def _input_devices_from_audio(cls, audio):
+        devices = []
+        for index in range(audio.get_device_count()):
+            info = dict(audio.get_device_info_by_index(index))
+            info["index"] = int(info.get("index", index))
+            info["name"] = cls._clean_microphone_name(
+                info.get("name", f"Microphone {index}")
+            )
+            info["hostApiName"] = cls._get_host_api_name(audio, info.get("hostApi"))
+            if cls._is_user_selectable_input(info):
+                devices.append(info)
+        return devices
+
+    @staticmethod
+    def _prefer_host_api(devices):
+        if not devices:
+            return []
+
+        wasapi_devices = [
+            device
+            for device in devices
+            if "wasapi" in device.get("hostApiName", "").lower()
+        ]
+        if wasapi_devices:
+            return wasapi_devices
+
+        high_level_devices = [
+            device
+            for device in devices
+            if not any(
+                api in device.get("hostApiName", "").lower()
+                for api in WINDOWS_LOW_LEVEL_AUDIO_APIS
+            )
+        ]
+        return high_level_devices or devices
+
+    @classmethod
+    def _dedupe_devices(cls, devices):
+        seen = set()
+        unique = []
+        for device in devices:
+            key = cls._clean_microphone_name(device.get("name", "")).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(device)
+        return unique
 
     @staticmethod
     def list_microphones():
@@ -67,12 +155,13 @@ class AsyncVoiceAgent:
 
             audio = pyaudio.PyAudio()
             try:
-                devices = []
-                for index in range(audio.get_device_count()):
-                    info = audio.get_device_info_by_index(index)
-                    if int(info.get("maxInputChannels", 0)) > 0:
-                        devices.append((index, info.get("name", f"Microphone {index}")))
-                return devices
+                devices = AsyncVoiceAgent._input_devices_from_audio(audio)
+                devices = AsyncVoiceAgent._prefer_host_api(devices)
+                devices = AsyncVoiceAgent._dedupe_devices(devices)
+                return [
+                    (device["index"], device["name"])
+                    for device in devices
+                ]
             finally:
                 audio.terminate()
         except Exception as e:
@@ -81,9 +170,56 @@ class AsyncVoiceAgent:
                 return [
                     (index, name)
                     for index, name in enumerate(sr.Microphone.list_microphone_names())
+                    if name and not any(
+                        alias in name.lower()
+                        for alias in (*WINDOWS_INPUT_ALIAS_NAMES, *NON_MIC_INPUT_NAMES)
+                    )
                 ]
             except Exception:
                 return []
+
+    @classmethod
+    def get_default_microphone_info(cls):
+        try:
+            import pyaudio
+
+            audio = pyaudio.PyAudio()
+            try:
+                info = audio.get_default_input_device_info()
+                if int(info.get("maxInputChannels", 0)) > 0 and cls._is_user_selectable_input(info):
+                    return (
+                        int(info["index"]),
+                        cls._clean_microphone_name(info.get("name", "")),
+                    )
+            finally:
+                audio.terminate()
+        except Exception as e:
+            print(f"Failed to resolve default microphone: {e}")
+        devices = cls.list_microphones()
+        if devices:
+            return devices[0]
+        return None
+
+    @classmethod
+    def get_default_microphone_index(cls):
+        info = cls.get_default_microphone_info()
+        if info is not None:
+            return info[0]
+        return None
+
+    @classmethod
+    def get_microphone_label(cls, index=None):
+        if index is None:
+            default_info = cls.get_default_microphone_info()
+            if default_info is not None:
+                device_index, name = default_info
+                return f"Mic {device_index}: {name}"
+            return "micro mặc định hệ thống"
+
+        for device_index, name in cls.list_microphones():
+            if device_index == index:
+                return f"Mic {device_index}: {name}"
+        return f"Mic {index}"
 
     async def calibrate(self):
         """Calibrates the microphone for ambient noise in a non-blocking executor."""

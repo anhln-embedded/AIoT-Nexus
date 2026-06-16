@@ -1,6 +1,6 @@
 import asyncio
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import numpy as np
 
@@ -8,6 +8,7 @@ from src.core.engine import AsyncCoreEngine
 from src.core import config
 from src.hardware.uart import AsyncHardwareController
 from src.mcp.client import AsyncMcpClient
+from src.voice.agent import AsyncVoiceAgent
 from src.vision.agent import AsyncVisionAgent
 
 
@@ -82,6 +83,75 @@ class VisionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["detected_color"], "Blue")
         self.assertTrue(encoded_frame)
+
+
+class VoiceTests(unittest.TestCase):
+    def test_windows_microphone_listing_filters_aliases(self):
+        class FakeAudio:
+            host_apis = {
+                0: {"name": "MME"},
+                1: {"name": "Windows WASAPI"},
+                2: {"name": "Windows WDM-KS"},
+            }
+            devices = [
+                {
+                    "index": 0,
+                    "name": "Microsoft Sound Mapper - Input",
+                    "hostApi": 0,
+                    "maxInputChannels": 2,
+                },
+                {
+                    "index": 1,
+                    "name": "Microphone Array (Intel)",
+                    "hostApi": 0,
+                    "maxInputChannels": 4,
+                },
+                {
+                    "index": 2,
+                    "name": "Speakers (Realtek)",
+                    "hostApi": 1,
+                    "maxInputChannels": 0,
+                },
+                {
+                    "index": 3,
+                    "name": "Microphone Array (Intel)",
+                    "hostApi": 1,
+                    "maxInputChannels": 2,
+                },
+                {
+                    "index": 4,
+                    "name": "Microphone Array 1 (Intel)",
+                    "hostApi": 2,
+                    "maxInputChannels": 2,
+                },
+            ]
+
+            def get_device_count(self):
+                return len(self.devices)
+
+            def get_device_info_by_index(self, index):
+                return self.devices[index]
+
+            def get_host_api_info_by_index(self, index):
+                return self.host_apis[index]
+
+        devices = AsyncVoiceAgent._input_devices_from_audio(FakeAudio())
+        devices = AsyncVoiceAgent._prefer_host_api(devices)
+        devices = AsyncVoiceAgent._dedupe_devices(devices)
+
+        self.assertEqual(
+            [(device["index"], device["name"]) for device in devices],
+            [(3, "Microphone Array (Intel)")],
+        )
+
+    def test_default_microphone_resolves_to_available_index(self):
+        agent = AsyncVoiceAgent()
+
+        with patch.object(agent, "get_default_microphone_index", return_value=7):
+            with patch("src.voice.agent.sr.Microphone") as microphone:
+                _ = agent.microphone
+
+        microphone.assert_called_once_with(device_index=7)
 
 
 class CoreTests(unittest.IsolatedAsyncioTestCase):
