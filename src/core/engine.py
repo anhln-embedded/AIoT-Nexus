@@ -103,6 +103,14 @@ class AsyncCoreEngine:
             "value": message
         })
 
+    async def chat_to_ui(self, role: str, message: str):
+        """Broadcasts a chat message to the UI conversation pane."""
+        await self.ui_queue.put({
+            "type": "chat_message",
+            "role": role,
+            "value": message
+        })
+
     async def broadcast_telemetry(self):
         """Broadcasts current hardware states to the UI dashboard."""
         await self.ui_queue.put({
@@ -147,6 +155,15 @@ class AsyncCoreEngine:
         async with self._interaction_lock:
             await self._run_voice_pipeline()
 
+    async def trigger_text_interaction(self, user_text: str):
+        """Runs the AIoT interaction pipeline from typed user text."""
+        user_text = user_text.strip()
+        if not user_text or self.state != "IDLE" or self._interaction_lock.locked():
+            return
+
+        async with self._interaction_lock:
+            await self._run_text_pipeline(user_text)
+
     async def _run_voice_pipeline(self):
         try:
             await self.set_state("LISTENING")
@@ -160,6 +177,7 @@ class AsyncCoreEngine:
                 return
 
             await self.set_state("PROCESSING")
+            await self.chat_to_ui("user", user_text)
             await self.log_to_ui(f"Bạn nói: \"{user_text}\"")
 
             model_name = self._get_selected_model_string()
@@ -174,11 +192,41 @@ class AsyncCoreEngine:
             )
 
             await self.set_state("SPEAKING")
+            await self.chat_to_ui("assistant", ai_response)
             await self.voice.speak(ai_response, log_callback=self.log_to_ui)
 
         except Exception as e:
             print(f"Error in core pipeline: {e}")
             await self.log_to_ui(f"Lỗi hệ thống: {e}")
+            await self.set_state("SPEAKING")
+            await self.voice.speak("Hệ thống gặp sự cố, vui lòng thử lại.", log_callback=self.log_to_ui)
+        finally:
+            await self.set_state("IDLE")
+            await self.broadcast_telemetry()
+
+    async def _run_text_pipeline(self, user_text: str):
+        try:
+            await self.chat_to_ui("user", user_text)
+            await self.set_state("PROCESSING")
+
+            model_name = self._get_selected_model_string()
+            ai_response, b64_frame = await self.mcp.chat(
+                prompt=user_text,
+                model_name=model_name,
+                api_key=self.api_key,
+                api_base=self.api_base,
+                tool_hook=self.handle_tool_execution_hook,
+                log_callback=self.log_to_ui
+            )
+
+            await self.chat_to_ui("assistant", ai_response)
+            await self.set_state("SPEAKING")
+            await self.voice.speak(ai_response, log_callback=self.log_to_ui)
+
+        except Exception as e:
+            print(f"Error in text pipeline: {e}")
+            await self.log_to_ui(f"Lỗi hệ thống: {e}")
+            await self.chat_to_ui("assistant", "Hệ thống gặp sự cố, vui lòng thử lại.")
             await self.set_state("SPEAKING")
             await self.voice.speak("Hệ thống gặp sự cố, vui lòng thử lại.", log_callback=self.log_to_ui)
         finally:
@@ -219,3 +267,14 @@ class AsyncCoreEngine:
     async def get_available_cameras(self) -> list[int]:
         """Queries the hardware for available camera indexes."""
         return await self.vision.get_available_cameras()
+
+    async def get_available_microphones(self) -> list[tuple[int, str]]:
+        """Queries available microphone input devices."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self.voice.list_microphones)
+
+    async def update_microphone_index(self, index: int | None):
+        """Updates the microphone input device used for STT."""
+        self.voice.set_microphone_index(index)
+        label = "mặc định hệ thống" if index is None else f"Micro {index}"
+        await self.log_to_ui(f"Hệ thống: Thiết lập sử dụng {label}.")

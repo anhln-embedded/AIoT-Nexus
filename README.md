@@ -135,7 +135,8 @@ python -m pip install --upgrade pip setuptools wheel
 pip install -r requirements.txt
 ```
 
-Optional microphone support may need PyAudio:
+Microphone input selection uses PyAudio, which is included in `requirements.txt`.
+If you install dependencies manually and microphone listing is unavailable, install it with:
 
 ```bash
 pip install PyAudio

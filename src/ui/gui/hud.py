@@ -99,6 +99,7 @@ async def main_hud(page: ft.Page):
     
     # Detect available cameras dynamically from hardware
     available_cameras = await core.get_available_cameras()
+    available_microphones = await core.get_available_microphones()
     
     # --- Custom Styling Tokens ---
     BG_CARD = "#1F2833"
@@ -123,19 +124,19 @@ async def main_hud(page: ft.Page):
 
     brand_gap = ft.Container(height=24)
 
-    state_icon = ft.Icon(ft.Icons.MIC, size=55, color="#66FCF1")
+    state_icon = ft.Icon(ft.Icons.MIC, size=64, color="#66FCF1")
     
     # Glowing Indicator Container
     glow_indicator = ft.Container(
-        width=150,
-        height=150,
+        width=164,
+        height=164,
         shape=ft.BoxShape.CIRCLE,
-        bgcolor="#1F2833",
-        border=ft.Border.all(3, "#66FCF1"),
+        bgcolor="#182533",
+        border=ft.Border.all(4, "#66FCF1"),
         shadow=ft.BoxShadow(
-            spread_radius=8,
-            blur_radius=18,
-            color=ft.Colors.with_opacity(0.3, "#66FCF1"),
+            spread_radius=12,
+            blur_radius=26,
+            color=ft.Colors.with_opacity(0.48, "#66FCF1"),
             blur_style=ft.BlurStyle.OUTER,
         ),
         content=state_icon,
@@ -145,32 +146,48 @@ async def main_hud(page: ft.Page):
     
     status_label = ft.Text(
         "Khởi động hệ thống...",
-        size=18,
+        size=19,
         color="#66FCF1",
         weight=ft.FontWeight.BOLD
     )
+    status_badge = ft.Container(
+        padding=ft.Padding.symmetric(horizontal=16, vertical=6),
+        border_radius=8,
+        bgcolor=ft.Colors.with_opacity(0.42, "#0B0C10"),
+        border=ft.Border.all(1, "#45A29E"),
+        shadow=ft.BoxShadow(
+            spread_radius=1,
+            blur_radius=10,
+            color=ft.Colors.with_opacity(0.22, "#66FCF1"),
+            blur_style=ft.BlurStyle.OUTER,
+        ),
+        content=status_label,
+    )
+    status_gap = ft.Container(height=10)
     
     # Pulsing task for animation loop
     async def pulse_indicator():
         while core.is_running:
             if core.state == "LISTENING":
                 glow_indicator.scale = 1.1
-                glow_indicator.shadow.spread_radius = 12
-                glow_indicator.shadow.blur_radius = 24
-                glow_indicator.shadow.color = ft.Colors.with_opacity(0.7, "#00FF00")
+                glow_indicator.shadow.spread_radius = 16
+                glow_indicator.shadow.blur_radius = 30
+                glow_indicator.shadow.color = ft.Colors.with_opacity(0.78, "#00FF00")
             elif core.state == "SPEAKING":
                 glow_indicator.scale = 1.05 if glow_indicator.scale == 1.0 else 1.0
-                glow_indicator.shadow.spread_radius = 10
-                glow_indicator.shadow.color = ft.Colors.with_opacity(0.6, "#9900FF")
+                glow_indicator.shadow.spread_radius = 14
+                glow_indicator.shadow.blur_radius = 28
+                glow_indicator.shadow.color = ft.Colors.with_opacity(0.68, "#9900FF")
             elif core.state == "PROCESSING":
                 glow_indicator.scale = 1.0
-                glow_indicator.shadow.spread_radius = 6 if glow_indicator.shadow.spread_radius == 12 else 12
-                glow_indicator.shadow.color = ft.Colors.with_opacity(0.6, "#FFBF00")
+                glow_indicator.shadow.spread_radius = 9 if glow_indicator.shadow.spread_radius == 16 else 16
+                glow_indicator.shadow.blur_radius = 28
+                glow_indicator.shadow.color = ft.Colors.with_opacity(0.68, "#FFBF00")
             else:
                 glow_indicator.scale = 1.0
-                glow_indicator.shadow.spread_radius = 6
-                glow_indicator.shadow.blur_radius = 14
-                glow_indicator.shadow.color = ft.Colors.with_opacity(0.4, "#66FCF1")
+                glow_indicator.shadow.spread_radius = 10
+                glow_indicator.shadow.blur_radius = 24
+                glow_indicator.shadow.color = ft.Colors.with_opacity(0.5, "#66FCF1")
                 
             try:
                 glow_indicator.update()
@@ -354,29 +371,61 @@ async def main_hud(page: ft.Page):
     initial_idx = val.split()[-1] if val else "0"
     camera_placeholder_text.value = f"CAMERA STANDBY (Camera {initial_idx})"
 
-    # Debug / Status log console panel
-    log_list = ft.ListView(
+    # Conversation and system event panel
+    chat_list = ft.ListView(
         expand=True,
-        spacing=4,
+        spacing=8,
         auto_scroll=True
     )
     
-    log_panel = ft.Container(
+    chat_panel = ft.Container(
         expand=True,
         bgcolor="#0B0C10",
         border=ft.Border.all(1, "#1F2833"),
         border_radius=5,
-        padding=5,
-        content=log_list
+        padding=10,
+        content=chat_list
     )
 
     def append_log(message: str):
-        log_list.controls.append(
-            ft.Text(
-                f">> {message}", 
-                size=11, 
-                color="#C5C6C7", 
-                font_family="monospace"
+        chat_list.controls.append(
+            ft.Container(
+                alignment=ft.Alignment.CENTER_LEFT,
+                content=ft.Text(
+                    f">> {message}",
+                    size=10,
+                    color="#6F858C",
+                    font_family="monospace",
+                ),
+            )
+        )
+        page.update()
+
+    def append_chat_message(role: str, message: str):
+        is_user = role == "user"
+        bubble_color = "#14313A" if is_user else "#18212B"
+        border_color = "#45A29E" if is_user else "#2E3B48"
+        text_color = "#EAFBFA" if is_user else "#D7E1E5"
+        label = "Bạn" if is_user else "AIoT-Nexus"
+        alignment = ft.Alignment.CENTER_RIGHT if is_user else ft.Alignment.CENTER_LEFT
+
+        chat_list.controls.append(
+            ft.Container(
+                alignment=alignment,
+                content=ft.Container(
+                    width=430,
+                    padding=ft.Padding.symmetric(horizontal=12, vertical=9),
+                    border_radius=8,
+                    bgcolor=bubble_color,
+                    border=ft.Border.all(1, border_color),
+                    content=ft.Column(
+                        spacing=4,
+                        controls=[
+                            ft.Text(label, size=9, color="#66FCF1" if is_user else "#8EA0A7", weight=ft.FontWeight.BOLD),
+                            ft.Text(message, size=12, color=text_color, selectable=True),
+                        ],
+                    ),
+                ),
             )
         )
         page.update()
@@ -384,17 +433,199 @@ async def main_hud(page: ft.Page):
     async def on_trigger_click(e):
         asyncio.create_task(core.trigger_voice_interaction())
 
-    trigger_button = ft.ElevatedButton(
-        content="THỰC THI LỆNH (MIC)",
-        icon=ft.Icons.PLAY_ARROW_ROUNDED,
-        bgcolor="#45A29E",
-        color="#0B0C10",
-        on_click=on_trigger_click,
-        style=ft.ButtonStyle(
-            shape=ft.RoundedRectangleBorder(radius=6),
-            text_style=ft.TextStyle(size=13, weight=ft.FontWeight.BOLD),
-        )
+    async def submit_chat_text(e=None):
+        text = chat_input.value.strip()
+        if not text:
+            return
+
+        chat_state["waiting"] = True
+        chat_input.value = ""
+        chat_input.update()
+        update_chat_send_button()
+        asyncio.create_task(core.trigger_text_interaction(text))
+
+    glow_indicator.on_click = on_trigger_click
+    glow_indicator.tooltip = "Nhấn để thực thi lệnh thoại"
+
+    microphone_options = [ft.dropdown.Option("Mặc định hệ thống")]
+    microphone_options.extend(
+        ft.dropdown.Option(f"Mic {index}: {name[:34]}")
+        for index, name in available_microphones
     )
+
+    async def on_microphone_change(e):
+        try:
+            value = microphone_dropdown.value or "Mặc định hệ thống"
+            if value == "Mặc định hệ thống":
+                await core.update_microphone_index(None)
+                return
+
+            index = int(value.split(":", 1)[0].split()[-1])
+            await core.update_microphone_index(index)
+        except Exception as ex:
+            print(f"Error updating microphone index: {ex}")
+
+    microphone_dropdown = ft.Dropdown(
+        options=microphone_options,
+        value="Mặc định hệ thống",
+        width=172,
+        height=44,
+        text_size=9,
+        color="#C5C6C7",
+        border_color="#2E3B48",
+        border_radius=5,
+        content_padding=ft.Padding.symmetric(horizontal=10, vertical=6),
+        dense=True,
+        focused_border_color="#45A29E",
+    )
+    microphone_dropdown.on_change = on_microphone_change
+
+    microphone_controls = ft.Container(
+        width=204,
+        padding=ft.Padding.symmetric(horizontal=8, vertical=7),
+        border_radius=8,
+        bgcolor="#141B24",
+        border=ft.Border.all(1, "#24303C"),
+        alignment=ft.Alignment.CENTER,
+        content=ft.Column(
+            spacing=3,
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[
+                ft.Row(
+                    controls=[
+                        ft.Icon(ft.Icons.MIC_EXTERNAL_ON, color="#6F858C", size=12),
+                        ft.Text("MIC INPUT", size=7, color="#6F858C", weight=ft.FontWeight.BOLD),
+                    ],
+                    spacing=5,
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                microphone_dropdown,
+            ],
+        ),
+    )
+
+    microphone_gap = ft.Container(height=12)
+    chat_state = {"waiting": False}
+
+    chat_input = ft.TextField(
+        hint_text="Hỏi bất kỳ điều gì",
+        width=360,
+        height=28,
+        text_size=13,
+        text_vertical_align=0.0,
+        color="#EAFBFA",
+        bgcolor="transparent",
+        border=ft.InputBorder.NONE,
+        focused_border_color="transparent",
+        focused_bgcolor="transparent",
+        hover_color="transparent",
+        focus_color="transparent",
+        cursor_color="#66FCF1",
+        content_padding=0,
+        dense=True,
+        collapsed=True,
+    )
+
+    chat_input_shell = ft.Container(
+        expand=True,
+        height=34,
+        padding=ft.Padding.symmetric(horizontal=8, vertical=0),
+        bgcolor="transparent",
+        alignment=ft.Alignment.CENTER_LEFT,
+        content=chat_input,
+    )
+
+    chat_add_button = ft.IconButton(
+        icon=ft.Icons.ADD_ROUNDED,
+        icon_color="#8EA0A7",
+        icon_size=24,
+        tooltip="Tùy chọn thêm",
+        width=34,
+        height=34,
+        padding=0,
+    )
+
+    chat_mode_label = ft.Row(
+        controls=[
+            ft.Text("Tức thì", size=12, color="#8EA0A7"),
+            ft.Icon(ft.Icons.KEYBOARD_ARROW_DOWN_ROUNDED, size=16, color="#8EA0A7"),
+        ],
+        spacing=2,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+    )
+
+    chat_voice_button = ft.IconButton(
+        icon=ft.Icons.MIC_ROUNDED,
+        icon_color="#A9C6C8",
+        icon_size=20,
+        tooltip="Nhấn để nói",
+        width=34,
+        height=34,
+        padding=0,
+        on_click=on_trigger_click,
+    )
+
+    chat_send_button = ft.IconButton(
+        icon=ft.Icons.GRAPHIC_EQ_ROUNDED,
+        icon_color="#071012",
+        icon_size=22,
+        bgcolor="#66FCF1",
+        tooltip="Gửi lệnh text",
+        on_click=submit_chat_text,
+        width=42,
+        height=42,
+        padding=0,
+    )
+
+    def update_chat_send_button():
+        has_text = bool(chat_input.value.strip())
+        if chat_state["waiting"]:
+            chat_send_button.icon = ft.Icons.STOP_ROUNDED
+            chat_send_button.tooltip = "Đang chờ phản hồi"
+            chat_send_button.bgcolor = "#EAFBFA"
+            chat_send_button.icon_color = "#071012"
+        elif has_text:
+            chat_send_button.icon = ft.Icons.ARROW_UPWARD_ROUNDED
+            chat_send_button.tooltip = "Gửi lệnh text"
+            chat_send_button.bgcolor = "#66FCF1"
+            chat_send_button.icon_color = "#071012"
+        else:
+            chat_send_button.icon = ft.Icons.GRAPHIC_EQ_ROUNDED
+            chat_send_button.tooltip = "Nhập text hoặc dùng mic"
+            chat_send_button.bgcolor = "#2E8E8A"
+            chat_send_button.icon_color = "#DDFCF9"
+        try:
+            chat_send_button.update()
+        except Exception:
+            pass
+
+    def on_chat_input_change(e):
+        update_chat_send_button()
+
+    chat_input.on_change = on_chat_input_change
+    chat_input.on_submit = submit_chat_text
+
+    chat_input_bar = ft.Container(
+        width=640,
+        height=52,
+        padding=ft.Padding.symmetric(horizontal=12, vertical=5),
+        bgcolor="#101923",
+        border=ft.Border.all(1, "#2B5960"),
+        border_radius=26,
+        content=ft.Row(
+            controls=[
+                chat_add_button,
+                chat_input_shell,
+                chat_mode_label,
+                chat_voice_button,
+                chat_send_button,
+            ],
+            spacing=9,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        ),
+    )
+    update_chat_send_button()
 
     # --- Page Layout Assembly ---
     left_column = ft.Column(
@@ -406,8 +637,10 @@ async def main_hud(page: ft.Page):
             brand_header,
             brand_gap,
             glow_indicator,
-            status_label,
-            trigger_button,
+            status_gap,
+            status_badge,
+            microphone_gap,
+            microphone_controls,
             ft.Divider(height=10, color="transparent"),
             ft.Row([temp_card, hum_card], spacing=10, alignment=ft.MainAxisAlignment.CENTER),
         ]
@@ -425,8 +658,12 @@ async def main_hud(page: ft.Page):
                 content=camera_controls,
                 alignment=ft.Alignment.CENTER,
             ),
-            ft.Text("BẢNG ĐIỀU KHIỂN HỆ THỐNG / LOGS", size=9, color="#45A29E", weight=ft.FontWeight.BOLD),
-            log_panel
+            ft.Text("TRUNG TÂM HỘI THOẠI", size=9, color="#45A29E", weight=ft.FontWeight.BOLD),
+            chat_panel,
+            ft.Container(
+                content=chat_input_bar,
+                alignment=ft.Alignment.CENTER,
+            ),
         ]
     )
 
@@ -473,6 +710,8 @@ async def main_hud(page: ft.Page):
 
                 if ev_type == "state":
                     if ev_val == "IDLE":
+                        chat_state["waiting"] = False
+                        update_chat_send_button()
                         status_label.value = "Chờ lệnh..."
                         status_label.color = "#66FCF1"
                         state_icon.name = ft.Icons.MIC
@@ -498,6 +737,8 @@ async def main_hud(page: ft.Page):
                         state_icon.color = "#00FF00"
                         glow_indicator.border.color = "#00FF00"
                     elif ev_val == "PROCESSING":
+                        chat_state["waiting"] = True
+                        update_chat_send_button()
                         status_label.value = "Đang suy nghĩ..."
                         status_label.color = "#FFBF00"
                         state_icon.name = ft.Icons.PSYCHOLOGY
@@ -512,6 +753,9 @@ async def main_hud(page: ft.Page):
                     
                 elif ev_type == "log":
                     append_log(str(ev_val))
+
+                elif ev_type == "chat_message":
+                    append_chat_message(str(event.get("role", "assistant")), str(ev_val))
 
                 elif ev_type == "telemetry":
                     temp_text.value = f"{event.get('temp')} °C"

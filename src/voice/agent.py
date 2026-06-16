@@ -46,13 +46,44 @@ class AsyncVoiceAgent:
         self.recognizer.energy_threshold = 300
         self.recognizer.dynamic_energy_threshold = True
         self._microphone = None
+        self.microphone_index = None
         self.is_calibrated = False
 
     @property
     def microphone(self):
         if self._microphone is None:
-            self._microphone = sr.Microphone()
+            self._microphone = sr.Microphone(device_index=self.microphone_index)
         return self._microphone
+
+    def set_microphone_index(self, index):
+        self.microphone_index = index
+        self._microphone = None
+        self.is_calibrated = False
+
+    @staticmethod
+    def list_microphones():
+        try:
+            import pyaudio
+
+            audio = pyaudio.PyAudio()
+            try:
+                devices = []
+                for index in range(audio.get_device_count()):
+                    info = audio.get_device_info_by_index(index)
+                    if int(info.get("maxInputChannels", 0)) > 0:
+                        devices.append((index, info.get("name", f"Microphone {index}")))
+                return devices
+            finally:
+                audio.terminate()
+        except Exception as e:
+            print(f"Failed to list microphones: {e}")
+            try:
+                return [
+                    (index, name)
+                    for index, name in enumerate(sr.Microphone.list_microphone_names())
+                ]
+            except Exception:
+                return []
 
     async def calibrate(self):
         """Calibrates the microphone for ambient noise in a non-blocking executor."""
