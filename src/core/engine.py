@@ -45,6 +45,7 @@ class AsyncCoreEngine:
             baudrate=BAUDRATE,
         )
         self.vision = AsyncVisionAgent(camera_index=CAMERA_INDEX)
+        self.vision.state_callback = self.handle_camera_state_change
         self.voice = AsyncVoiceAgent()
         self.mcp = AsyncMcpClient(hw_controller=self.hw, vision_agent=self.vision)
 
@@ -196,10 +197,17 @@ class AsyncCoreEngine:
         self.api_base = api_base
         print(f"Updated dynamic LLM config: Provider={provider}, Model={self._get_selected_model_string()}")
 
+    async def handle_camera_state_change(self, enabled: bool):
+        """Callback triggered when camera state changes."""
+        await self.ui_queue.put({
+            "type": "camera_state",
+            "value": enabled
+        })
+        await self.log_to_ui(f"Hệ thống: Đã {'bật' if enabled else 'tắt'} camera.")
+
     async def set_camera_enabled(self, enabled: bool):
         """Toggles the camera enabled state dynamically."""
         await self.vision.set_enabled(enabled)
-        await self.log_to_ui(f"Hệ thống: Đã {'bật' if enabled else 'tắt'} camera.")
 
     async def update_camera_index(self, index: int):
         """Updates the camera index dynamically."""

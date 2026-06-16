@@ -91,6 +91,10 @@ class AsyncMcpClient:
             if method == "get_dht_data":
                 result = await self.hw.get_dht_data()
             elif method == "detect_faces":
+                was_enabled = self.vision.is_enabled
+                if not was_enabled:
+                    await self.vision.set_enabled(True)
+                    await asyncio.sleep(0.5)
                 result, b64_frame = await self.vision.detect_faces()
                 result = {
                     "face_count": result["face_count"],
@@ -99,6 +103,10 @@ class AsyncMcpClient:
                     "_b64_frame": b64_frame
                 }
             elif method == "detect_colors":
+                was_enabled = self.vision.is_enabled
+                if not was_enabled:
+                    await self.vision.set_enabled(True)
+                    await asyncio.sleep(0.5)
                 result, b64_frame = await self.vision.detect_colors()
                 result = {
                     "detected_color": result["detected_color"],

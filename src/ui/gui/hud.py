@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import time
 import flet as ft
 from src.core.engine import AsyncCoreEngine
 from src.core.config import (
@@ -9,6 +10,54 @@ from src.core.config import (
     IS_PI,
     LLM_PROVIDERS,
 )
+
+
+class FletImageWidgetWrapper:
+    def __init__(self, real_image_widget):
+        self._real_widget = real_image_widget
+        self._src_base64 = ""
+
+    @property
+    def src_base64(self):
+        return self._src_base64
+
+    @src_base64.setter
+    def src_base64(self, val):
+        self._src_base64 = val
+        try:
+            import base64
+            self._real_widget.src = base64.b64decode(val)
+        except Exception as e:
+            print(f"Error decoding base64 in wrapper: {e}")
+
+
+class CameraViewWrapper:
+    def __init__(self, widget, fps_text=None):
+        self.widget = FletImageWidgetWrapper(widget)
+        self.fps_text = fps_text
+        self._frame_count = 0
+        self._last_time = time.time()
+
+    def update(self):
+        # Update the image widget directly
+        self.widget._real_widget.update()
+        
+        # Also update the FPS text if it's there
+        self._frame_count += 1
+        current_time = time.time()
+        elapsed = current_time - self._last_time
+        if elapsed >= 1.0:
+            fps = self._frame_count / elapsed
+            if self.fps_text:
+                try:
+                    self.fps_text.value = f"FPS: {fps:.1f}"
+                    self.fps_text.update()
+                except Exception:
+                    pass
+            self._frame_count = 0
+            self._last_time = current_time
+
+
 
 
 def configure_window(
@@ -170,10 +219,10 @@ async def main_hud(page: ft.Page):
     )
     
     camera_feed = ft.Image(
-        src=b"",
+        src=base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="),
         width=640,
         height=360,
-        fit=ft.BoxFit.CONTAIN,
+        fit=getattr(ft, "ImageFit", ft.BoxFit).CONTAIN,
         visible=core.vision.is_enabled
     )
     
@@ -191,6 +240,10 @@ async def main_hud(page: ft.Page):
     camera_panel = ft.Container(
         content=ft.Stack([camera_placeholder, camera_feed, fps_container])
     )
+
+    camera_view = CameraViewWrapper(camera_feed, fps_text)
+    core.vision.camera_view = camera_view
+
 
     camera_title_text = ft.Text("THIẾT LẬP CAMERA:", size=11, color="#C5C6C7", weight=ft.FontWeight.BOLD)
     camera_source_text = ft.Text("Nguồn:", size=11, color="#C5C6C7")
@@ -213,23 +266,6 @@ async def main_hud(page: ft.Page):
         try:
             enabled = camera_switch.value
             await core.set_camera_enabled(enabled)
-            val = camera_dropdown.value
-            idx = val.split()[-1] if val else "0"
-            if not enabled:
-                camera_placeholder_text.value = f"CAMERA DISABLED (Camera {idx})"
-                camera_placeholder_text.color = "#FF5555"
-                camera_placeholder_icon.color = "#FF5555"
-                camera_feed.visible = False
-                camera_placeholder.visible = True
-                fps_container.visible = False
-            else:
-                camera_placeholder_text.value = f"CAMERA STANDBY (Camera {idx})"
-                camera_placeholder_text.color = "#C5C6C7"
-                camera_placeholder_icon.color = "#C5C6C7"
-                camera_placeholder.visible = False
-                camera_feed.visible = True
-                fps_container.visible = True
-            page.update()
         except Exception as ex:
             print(f"Error toggling camera enabled state: {ex}")
 
@@ -249,7 +285,7 @@ async def main_hud(page: ft.Page):
     camera_dropdown.on_change = on_camera_change
 
     camera_switch = ft.Switch(
-        label="Bật Camera",
+        label="TẮT CAMERA" if core.vision.is_enabled else "BẬT CAMERA",
         value=core.vision.is_enabled,
         active_color="#66FCF1",
     )
@@ -446,61 +482,55 @@ async def main_hud(page: ft.Page):
                     
                 elif ev_type == "camera_frame":
                     if camera_switch.value:
-                        camera_feed.src = base64.b64decode(str(ev_val))
+                        camera_view.widget.src_base64 = str(ev_val)
                         camera_placeholder.visible = False
                         camera_feed.visible = True
+                        camera_view.update()
+                        camera_placeholder.update()
 
-                page.update()
+                elif ev_type == "camera_state":
+                    enabled = bool(ev_val)
+                    camera_switch.value = enabled
+                    camera_switch.label = "TẮT CAMERA" if enabled else "BẬT CAMERA"
+                    val = camera_dropdown.value
+                    idx = val.split()[-1] if val else "0"
+                    if not enabled:
+                        camera_placeholder_text.value = f"CAMERA DISABLED (Camera {idx})"
+                        camera_placeholder_text.color = "#FF5555"
+                        camera_placeholder_icon.color = "#FF5555"
+                        camera_feed.visible = False
+                        camera_placeholder.visible = True
+                        fps_container.visible = False
+                    else:
+                        camera_placeholder_text.value = f"CAMERA STANDBY (Camera {idx})"
+                        camera_placeholder_text.color = "#C5C6C7"
+                        camera_placeholder_icon.color = "#C5C6C7"
+                        camera_placeholder.visible = False
+                        camera_feed.visible = True
+                        fps_container.visible = True
+                    
+                    camera_switch.update()
+                    camera_placeholder.update()
+                    camera_feed.update()
+                    fps_container.update()
+
+                if ev_type != "camera_frame":
+                    page.update()
                 core.ui_queue.task_done()
 
             except Exception as e:
                 print(f"UI listener error: {e}")
             await asyncio.sleep(0.05)
 
-    async def camera_streamer_loop():
-        import cv2
-        import time
-        last_time = time.time()
-        frame_count = 0
-        while core.is_running:
-            try:
-                if core.state == "IDLE" and camera_switch.value:
-                    frame, is_mock = await core.vision.get_raw_frame()
-                    _, buffer = cv2.imencode('.jpg', frame)
-                    camera_feed.src = buffer.tobytes()
-                    camera_placeholder.visible = False
-                    camera_feed.visible = True
-                    
-                    frame_count += 1
-                    current_time = time.time()
-                    elapsed = current_time - last_time
-                    if elapsed >= 1.0:
-                        fps = frame_count / elapsed
-                        fps_text.value = f"FPS: {fps:.1f}"
-                        fps_container.visible = True
-                        frame_count = 0
-                        last_time = current_time
-                    
-                    page.update()
-                else:
-                    if fps_container.visible:
-                        fps_container.visible = False
-                        page.update()
-            except Exception as e:
-                print(f"Camera stream error: {e}")
-            await asyncio.sleep(0.04)
-
     # Start core engine and spawn tasks
     await core.start()
     
     pulse_task = asyncio.create_task(pulse_indicator())
     listener_task = asyncio.create_task(ui_queue_listener())
-    streamer_task = asyncio.create_task(camera_streamer_loop())
 
     async def cleanup(e):
         await core.stop()
         pulse_task.cancel()
         listener_task.cancel()
-        streamer_task.cancel()
         
     page.on_close = cleanup
