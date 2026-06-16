@@ -22,6 +22,7 @@ class AsyncVisionAgent:
         self.is_enabled = True
         self.state_callback = None
         self.camera_view = None
+        self.is_mirrored = False
         self._camera_lock = asyncio.Lock()
         
         # Background capture thread fields
@@ -178,6 +179,9 @@ class AsyncVisionAgent:
 
     def _encode_preview_frame(self):
         frame, _ = self._grab_frame()
+        if self.is_mirrored:
+            frame = cv2.flip(frame, 1)
+
         height, width = frame.shape[:2]
         if width != PREVIEW_WIDTH or height != PREVIEW_HEIGHT:
             frame = cv2.resize(

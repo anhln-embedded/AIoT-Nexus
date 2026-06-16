@@ -271,6 +271,13 @@ async def main_hud(page: ft.Page):
         except Exception as ex:
             print(f"Error toggling camera enabled state: {ex}")
 
+    def on_camera_mirror_change(e):
+        try:
+            core.vision.is_mirrored = bool(camera_mirror_switch.value)
+            page.update()
+        except Exception as ex:
+            print(f"Error updating camera mirror mode: {ex}")
+
     camera_dropdown = ft.Dropdown(
         options=[
             ft.dropdown.Option(f"Camera {idx}")
@@ -285,6 +292,14 @@ async def main_hud(page: ft.Page):
         focused_border_color="#66FCF1",
     )
     camera_dropdown.on_change = on_camera_change
+
+    camera_mirror_switch = ft.Switch(
+        label="SOI GƯƠNG",
+        value=core.vision.is_mirrored,
+        active_color="#66FCF1",
+    )
+    camera_mirror_switch.on_change = on_camera_mirror_change
+
 
     camera_switch = ft.Switch(
         label="TẮT CAMERA" if core.vision.is_enabled else "BẬT CAMERA",
@@ -304,6 +319,7 @@ async def main_hud(page: ft.Page):
                     camera_source_text,
                     camera_dropdown,
                 ], spacing=5, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                camera_mirror_switch,
                 camera_switch,
             ],
             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
