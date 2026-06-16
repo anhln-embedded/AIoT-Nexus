@@ -106,6 +106,23 @@ async def main_hud(page: ft.Page):
     TEXT_NEON = "#66FCF1"
     
     # --- Left Panel UI Components (Glowing Status Eye) ---
+    brand_logo = ft.Image(
+        src="assets/logo/Logo_PTIT_University_transparent.png",
+        width=78,
+        height=78,
+        fit=getattr(ft, "ImageFit", ft.BoxFit).CONTAIN,
+        gapless_playback=True,
+    )
+
+    brand_header = ft.Container(
+        width=96,
+        height=76,
+        alignment=ft.Alignment.CENTER,
+        content=brand_logo,
+    )
+
+    brand_gap = ft.Container(height=24)
+
     state_icon = ft.Icon(ft.Icons.MIC, size=55, color="#66FCF1")
     
     # Glowing Indicator Container
@@ -383,9 +400,11 @@ async def main_hud(page: ft.Page):
     left_column = ft.Column(
         horizontal_alignment=ft.CrossAxisAlignment.CENTER,
         alignment=ft.MainAxisAlignment.CENTER,
-        spacing=15,
+        spacing=10,
         width=300,
         controls=[
+            brand_header,
+            brand_gap,
             glow_indicator,
             status_label,
             trigger_button,
