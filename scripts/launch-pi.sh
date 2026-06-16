@@ -42,24 +42,19 @@ update_from_git() {
         return
     fi
 
-    if [[ -n "$(git -C "${PROJECT_DIR}" status --porcelain --untracked-files=no)" ]]; then
-        echo "[AIoT-Nexus] Local changes detected; skipping auto update to avoid overwriting work." >&2
-        return
-    fi
-
     echo "[AIoT-Nexus] Updating from ${UPDATE_REMOTE}/${UPDATE_BRANCH}..."
 
     local before
     local after
     before="$(git -C "${PROJECT_DIR}" rev-parse HEAD)"
 
-    if ! git -C "${PROJECT_DIR}" fetch --prune "${UPDATE_REMOTE}" "${UPDATE_BRANCH}"; then
+    if ! git -C "${PROJECT_DIR}" fetch --prune "${UPDATE_REMOTE}" "+refs/heads/${UPDATE_BRANCH}:refs/remotes/${UPDATE_REMOTE}/${UPDATE_BRANCH}"; then
         echo "[AIoT-Nexus] git fetch failed; starting current version." >&2
         return
     fi
 
-    if ! git -C "${PROJECT_DIR}" merge --ff-only "FETCH_HEAD"; then
-        echo "[AIoT-Nexus] git update requires manual merge; starting current version." >&2
+    if ! git -C "${PROJECT_DIR}" reset --hard "${UPDATE_REMOTE}/${UPDATE_BRANCH}"; then
+        echo "[AIoT-Nexus] git reset failed; starting current version." >&2
         return
     fi
 
