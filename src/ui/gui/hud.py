@@ -1,5 +1,5 @@
 import asyncio
-import base64
+import os
 import time
 import flet as ft
 from src.core.engine import AsyncCoreEngine
@@ -10,6 +10,8 @@ from src.core.config import (
     IS_PI,
     LLM_PROVIDERS,
 )
+
+CAMERA_PREVIEW_FPS = float(os.getenv("AIOT_CAMERA_PREVIEW_FPS", "24"))
 
 
 class FletImageWidgetWrapper:
@@ -25,10 +27,9 @@ class FletImageWidgetWrapper:
     def src_base64(self, val):
         self._src_base64 = val
         try:
-            import base64
-            self._real_widget.src = base64.b64decode(val)
+            self._real_widget.src = val
         except Exception as e:
-            print(f"Error decoding base64 in wrapper: {e}")
+            print(f"Error updating image base64 in wrapper: {e}")
 
 
 class CameraViewWrapper:
@@ -219,10 +220,11 @@ async def main_hud(page: ft.Page):
     )
     
     camera_feed = ft.Image(
-        src=base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="),
+        src="iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
         width=640,
         height=360,
         fit=getattr(ft, "ImageFit", ft.BoxFit).CONTAIN,
+        gapless_playback=True,
         visible=core.vision.is_enabled
     )
     
@@ -522,15 +524,43 @@ async def main_hud(page: ft.Page):
                 print(f"UI listener error: {e}")
             await asyncio.sleep(0.05)
 
+    async def camera_preview_loop():
+        """Renders the latest captured frame at a steady UI-friendly cadence."""
+        frame_interval = 1.0 / max(CAMERA_PREVIEW_FPS, 1.0)
+        while core.is_running:
+            started_at = time.perf_counter()
+            try:
+                if camera_switch.value:
+                    b64_frame = await core.vision.get_preview_frame_base64()
+                    if b64_frame:
+                        camera_view.widget.src_base64 = b64_frame
+                        if not camera_feed.visible:
+                            camera_placeholder.visible = False
+                            camera_feed.visible = True
+                            fps_container.visible = True
+                            camera_placeholder.update()
+                            fps_container.update()
+                        camera_view.update()
+                else:
+                    await asyncio.sleep(0.1)
+                    continue
+            except Exception as e:
+                print(f"Camera preview loop error: {e}")
+
+            elapsed = time.perf_counter() - started_at
+            await asyncio.sleep(max(0.0, frame_interval - elapsed))
+
     # Start core engine and spawn tasks
     await core.start()
     
     pulse_task = asyncio.create_task(pulse_indicator())
     listener_task = asyncio.create_task(ui_queue_listener())
+    camera_task = asyncio.create_task(camera_preview_loop())
 
     async def cleanup(e):
         await core.stop()
         pulse_task.cancel()
         listener_task.cancel()
+        camera_task.cancel()
         
     page.on_close = cleanup

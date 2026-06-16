@@ -6,6 +6,12 @@ import base64
 import time
 import threading
 
+
+PREVIEW_WIDTH = int(os.getenv("AIOT_CAMERA_PREVIEW_WIDTH", "640"))
+PREVIEW_HEIGHT = int(os.getenv("AIOT_CAMERA_PREVIEW_HEIGHT", "360"))
+PREVIEW_JPEG_QUALITY = int(os.getenv("AIOT_CAMERA_JPEG_QUALITY", "75"))
+
+
 class AsyncVisionAgent:
     def __init__(self, camera_index: int = 0):
         self.camera_index = camera_index
@@ -23,10 +29,28 @@ class AsyncVisionAgent:
         self.latest_is_mock = True
         self.active_camera_index = camera_index
         self.frame_lock = threading.Lock()
-        self.thread_running = True
+        self.thread_running = False
         self.last_open_attempt = 0.0
+        self.cap_thread = None
+
+    def start_streaming(self):
+        if self.cap_thread is not None and self.cap_thread.is_alive():
+            return
+        self.is_streaming = True
+        self.thread_running = True
         self.cap_thread = threading.Thread(target=self._capture_loop, daemon=True)
         self.cap_thread.start()
+
+    def _configure_capture(self):
+        if self.cap is None or not self.cap.isOpened():
+            return
+
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        self.cap.set(cv2.CAP_PROP_FPS, 30)
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        if os.name == "nt":
+            self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
 
     def _open_camera(self):
         """Attempts to open the hardware camera. Returns True if successful."""
@@ -35,8 +59,7 @@ class AsyncVisionAgent:
                 backend = cv2.CAP_DSHOW if os.name == "nt" else cv2.CAP_ANY
                 self.cap = cv2.VideoCapture(self.camera_index, backend)
                 if self.cap is not None and self.cap.isOpened():
-                    self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                    self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                    self._configure_capture()
             return self.cap is not None and self.cap.isOpened()
         except Exception as e:
             print(f"Error opening camera: {e}")
@@ -81,8 +104,7 @@ class AsyncVisionAgent:
                         backend = cv2.CAP_DSHOW if os.name == "nt" else cv2.CAP_ANY
                         self.cap = cv2.VideoCapture(self.camera_index, backend)
                         if self.cap is not None and self.cap.isOpened():
-                            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                            self._configure_capture()
                     except Exception:
                         self.cap = None
                     finally:
@@ -109,7 +131,7 @@ class AsyncVisionAgent:
                     if self.cap.isOpened():
                         ret, raw_frame = self.cap.read()
                         if ret and raw_frame is not None:
-                            frame = raw_frame.copy()
+                            frame = raw_frame
                             is_mock = False
                 except Exception:
                     pass
@@ -130,22 +152,7 @@ class AsyncVisionAgent:
                 self.latest_frame = frame
                 self.latest_is_mock = is_mock
 
-            # Compress and encode to Base64 (70% JPEG quality)
-            try:
-                _, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
-                base64_string = base64.b64encode(buffer).decode('utf-8')
-                
-                # Push to Flet UI widget if wrapper is registered
-                if self.camera_view is not None:
-                    try:
-                        self.camera_view.widget.src_base64 = base64_string
-                        self.camera_view.update()
-                    except Exception:
-                        pass
-            except Exception as e:
-                print(f"Error compressing/encoding frame in loop: {e}")
-
-            time.sleep(0.033)
+            time.sleep(0.008 if not is_mock else 0.033)
 
         # Release resources when streaming is stopped/disabled
         if self.cap is not None:
@@ -169,6 +176,30 @@ class AsyncVisionAgent:
         """Asynchronously retrieves a single frame (camera or mock)."""
         return self._grab_frame()
 
+    def _encode_preview_frame(self):
+        frame, _ = self._grab_frame()
+        height, width = frame.shape[:2]
+        if width != PREVIEW_WIDTH or height != PREVIEW_HEIGHT:
+            frame = cv2.resize(
+                frame,
+                (PREVIEW_WIDTH, PREVIEW_HEIGHT),
+                interpolation=cv2.INTER_AREA,
+            )
+
+        ok, buffer = cv2.imencode(
+            ".jpg",
+            frame,
+            [int(cv2.IMWRITE_JPEG_QUALITY), PREVIEW_JPEG_QUALITY],
+        )
+        if not ok:
+            return None
+        return base64.b64encode(buffer).decode("utf-8")
+
+    async def get_preview_frame_base64(self):
+        """Returns the latest camera frame encoded for UI preview rendering."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._encode_preview_frame)
+
     async def set_enabled(self, enabled: bool):
         """Enables or disables camera polling."""
         self.is_enabled = enabled
@@ -176,11 +207,7 @@ class AsyncVisionAgent:
         
         if enabled:
             # Start background capture thread if not running
-            with self.frame_lock:
-                if not self.thread_running or self.cap_thread is None or not self.cap_thread.is_alive():
-                    self.thread_running = True
-                    self.cap_thread = threading.Thread(target=self._capture_loop, daemon=True)
-                    self.cap_thread.start()
+            self.start_streaming()
         else:
             # Stop capture thread and wait for it to join
             self.thread_running = False

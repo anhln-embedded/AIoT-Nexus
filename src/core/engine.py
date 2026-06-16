@@ -67,6 +67,8 @@ class AsyncCoreEngine:
             return
         self.is_running = True
         await self.hw.connect(log_callback=self.log_to_ui)
+        if self.vision.is_enabled:
+            self.vision.start_streaming()
         self._poller_task = asyncio.create_task(self._telemetry_poller_loop())
         await self.log_to_ui("Hệ thống AIoT-Nexus đã khởi động thành công.")
         await self.set_state("IDLE")
