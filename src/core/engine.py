@@ -28,6 +28,7 @@ from src.core.config import (
     LLM_PROVIDERS,
     PORT_PI,
     PORT_WIN,
+    PROBE_MICROPHONES_ON_STARTUP,
     TELEMETRY_INTERVAL,
     USE_REAL_UART,
 )
@@ -270,6 +271,8 @@ class AsyncCoreEngine:
 
     async def get_available_microphones(self) -> list[tuple[int, str]]:
         """Queries available microphone input devices."""
+        if not PROBE_MICROPHONES_ON_STARTUP:
+            return []
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self.voice.list_microphones)
 

@@ -40,16 +40,6 @@ try:
 except ImportError:
     edge_tts = None
 
-try:
-    import pygame
-except Exception:
-    pygame = None
-
-try:
-    import pyttsx3
-except ImportError:
-    pyttsx3 = None
-
 
 class AsyncVoiceAgent:
     def __init__(self, language: str = "vi-VN"):
@@ -85,6 +75,24 @@ class AsyncVoiceAgent:
     @staticmethod
     def _clean_microphone_name(name):
         return " ".join(str(name or "").replace("\r", " ").replace("\n", " ").split())
+
+    @staticmethod
+    def _load_pygame():
+        try:
+            import pygame
+            return pygame
+        except Exception as e:
+            print(f"pygame unavailable: {e}")
+            return None
+
+    @staticmethod
+    def _load_pyttsx3():
+        try:
+            import pyttsx3
+            return pyttsx3
+        except Exception as e:
+            print(f"pyttsx3 unavailable: {e}")
+            return None
 
     @staticmethod
     def _get_host_api_name(audio, host_api_index):
@@ -483,9 +491,10 @@ except Exception:
         if log_callback:
             await log_callback(f"TTS: {text}")
 
+        pygame = self._load_pygame() if edge_tts is not None else None
         if edge_tts is not None and pygame is not None:
             try:
-                success = await self._speak_edge_tts(text)
+                success = await self._speak_edge_tts(text, pygame)
                 if success:
                     return True
             except Exception as e:
@@ -493,9 +502,10 @@ except Exception:
                 if log_callback:
                     await log_callback("edge-tts lỗi, chuyển sang TTS hệ thống...")
 
+        pyttsx3 = self._load_pyttsx3()
         if pyttsx3 is not None:
             try:
-                await self._speak_pyttsx3(text)
+                await self._speak_pyttsx3(text, pyttsx3)
                 return True
             except Exception as e:
                 print(f"pyttsx3 failed: {e}")
@@ -508,7 +518,7 @@ except Exception:
         
         return False
 
-    async def _speak_edge_tts(self, text: str, voice: str = "vi-VN-HoaiMyNeural") -> bool:
+    async def _speak_edge_tts(self, text: str, pygame, voice: str = "vi-VN-HoaiMyNeural") -> bool:
         """Runs edge-tts and plays via pygame.mixer."""
         communicate = edge_tts.Communicate(text, voice)
         temp_dir = tempfile.gettempdir()
@@ -545,7 +555,7 @@ except Exception:
 
         return True
 
-    async def _speak_pyttsx3(self, text: str):
+    async def _speak_pyttsx3(self, text: str, pyttsx3):
         """Runs pyttsx3 in an executor since it is synchronous."""
         def _speak():
             engine = pyttsx3.init()

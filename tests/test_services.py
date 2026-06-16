@@ -246,6 +246,14 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             core.update_llm_settings("unknown", "")
 
+    async def test_microphone_startup_probe_can_be_disabled(self):
+        core = AsyncCoreEngine()
+        with patch("src.core.engine.PROBE_MICROPHONES_ON_STARTUP", False):
+            with patch.object(core.voice, "list_microphones") as list_microphones:
+                self.assertEqual(await core.get_available_microphones(), [])
+
+        list_microphones.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
