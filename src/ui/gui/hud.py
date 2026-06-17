@@ -464,18 +464,70 @@ async def main_hud(page: ft.Page):
         content=chat_list
     )
 
-    def append_log(message: str):
-        # Keep the conversation panel focused on chat bubbles only.
-        # Technical logs still go to the terminal via print statements.
-        return
+    xiaozhi_chat_state = {
+        "last_stt": "",
+        "assistant_parts": [],
+        "active_assistant_text": None,
+        "active_assistant_message": "",
+        "last_user_message": "",
+    }
 
-    def append_chat_message(role: str, message: str):
+    def normalize_chat_text(message: str) -> str:
+        return " ".join(message.split())
+
+    def append_log(message: str):
+        # Surface only XiaoZhi conversation events in the chat panel.
+        # Technical logs still go to the terminal via print statements.
+        if message.startswith("XiaoZhi STT: "):
+            stt_text = message.removeprefix("XiaoZhi STT: ").strip()
+            if stt_text:
+                xiaozhi_chat_state["last_stt"] = stt_text
+                xiaozhi_chat_state["assistant_parts"].clear()
+                xiaozhi_chat_state["active_assistant_text"] = None
+                xiaozhi_chat_state["active_assistant_message"] = ""
+                if normalize_chat_text(stt_text) != normalize_chat_text(xiaozhi_chat_state["last_user_message"]):
+                    append_chat_message("user", stt_text)
+            return
+
+        if message.startswith("XiaoZhi: "):
+            assistant_text = message.removeprefix("XiaoZhi: ").strip()
+            if assistant_text:
+                append_xiaozhi_assistant_part(assistant_text)
+            return
+
+    def append_xiaozhi_assistant_part(message: str):
+        xiaozhi_chat_state["assistant_parts"].append(message)
+        current_message = xiaozhi_chat_state["active_assistant_message"]
+        next_message = f"{current_message} {message}".strip() if current_message else message
+
+        active_text = xiaozhi_chat_state["active_assistant_text"]
+        if active_text is None:
+            active_text = append_chat_message("assistant", next_message, from_xiaozhi_stream=True)
+            xiaozhi_chat_state["active_assistant_text"] = active_text
+        else:
+            active_text.value = next_message
+            page.update()
+
+        xiaozhi_chat_state["active_assistant_message"] = next_message
+
+    def append_chat_message(role: str, message: str, from_xiaozhi_stream: bool = False):
+        if role == "user" and message == "Âm thanh từ micro" and xiaozhi_chat_state["last_stt"]:
+            return
+        if role == "assistant" and xiaozhi_chat_state["assistant_parts"] and not from_xiaozhi_stream:
+            xiaozhi_chat_state["assistant_parts"].clear()
+            xiaozhi_chat_state["active_assistant_text"] = None
+            xiaozhi_chat_state["active_assistant_message"] = ""
+            return
+
         is_user = role == "user"
+        if is_user:
+            xiaozhi_chat_state["last_user_message"] = message
         bubble_color = "#14313A" if is_user else "#18212B"
         border_color = "#45A29E" if is_user else "#2E3B48"
         text_color = "#EAFBFA" if is_user else "#D7E1E5"
-        label = "Bạn" if is_user else "AIoT-Nexus"
+        label = "Bạn" if is_user else ("XiaoZhi" if from_xiaozhi_stream else "AIoT-Nexus")
         alignment = ft.Alignment.CENTER_RIGHT if is_user else ft.Alignment.CENTER_LEFT
+        message_text = ft.Text(message, size=12, color=text_color, selectable=True)
 
         chat_list.controls.append(
             ft.Container(
@@ -490,13 +542,14 @@ async def main_hud(page: ft.Page):
                         spacing=4,
                         controls=[
                             ft.Text(label, size=9, color="#66FCF1" if is_user else "#8EA0A7", weight=ft.FontWeight.BOLD),
-                            ft.Text(message, size=12, color=text_color, selectable=True),
+                            message_text,
                         ],
                     ),
                 ),
             )
         )
         page.update()
+        return message_text
 
     async def on_trigger_click(e):
         asyncio.create_task(core.trigger_voice_interaction())
