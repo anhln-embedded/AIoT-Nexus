@@ -1,6 +1,8 @@
 import asyncio
+import base64
 import builtins
 import os
+import subprocess
 import tempfile
 import speech_recognition as sr
 
@@ -238,8 +240,38 @@ class AsyncVoiceAgent:
 
     async def listen(self, log_callback=None) -> str:
         """Listens to microphone and performs Speech-to-Text (STT) for Vietnamese."""
+        audio_data = await self.record_audio(log_callback=log_callback)
+        if audio_data is None:
+            return ""
+
+        loop = asyncio.get_running_loop()
+        try:
+            if log_callback:
+                await log_callback("Đang nhận diện giọng nói...")
+
+            def _recognize(audio):
+                return self.recognizer.recognize_google(audio, language=self.language)
+
+            text = await loop.run_in_executor(None, _recognize, audio_data)
+            print(f"Recognized STT: {text}")
+            return text
+
+        except sr.UnknownValueError:
+            print("Could not understand audio.")
+            if log_callback:
+                await log_callback("Không thể nhận diện được giọng nói.")
+            return ""
+        except Exception as e:
+            print(f"STT Error: {e}")
+            if log_callback:
+                await log_callback(f"Lỗi STT: {str(e)}")
+            return ""
+
+    async def record_audio(self, log_callback=None):
+        """Records a microphone utterance without running local STT."""
         if log_callback:
             await log_callback("Đang chuẩn bị micro...")
+            await log_callback(f"Micro đang dùng: {self.get_microphone_label(self._get_effective_microphone_index())}")
         
         try:
             await self.calibrate()
@@ -257,34 +289,18 @@ class AsyncVoiceAgent:
         try:
             if log_callback:
                 await log_callback("Đang lắng nghe giọng nói...")
-            
-            audio_data = await loop.run_in_executor(None, _record)
-            
-            if log_callback:
-                await log_callback("Đang nhận diện giọng nói...")
-
-            def _recognize(audio):
-                return self.recognizer.recognize_google(audio, language=self.language)
-
-            text = await loop.run_in_executor(None, _recognize, audio_data)
-            print(f"Recognized STT: {text}")
-            return text
+            return await loop.run_in_executor(None, _record)
 
         except sr.WaitTimeoutError:
             print("Listening timed out.")
             if log_callback:
                 await log_callback("Hết thời gian lắng nghe (không có âm thanh).")
-            return ""
-        except sr.UnknownValueError:
-            print("Could not understand audio.")
-            if log_callback:
-                await log_callback("Không thể nhận diện được giọng nói.")
-            return ""
+            return None
         except Exception as e:
-            print(f"STT Error: {e}")
+            print(f"Recording Error: {e}")
             if log_callback:
-                await log_callback(f"Lỗi STT: {str(e)}")
-            return ""
+                await log_callback(f"Lỗi ghi âm: {str(e)}")
+            return None
 
     async def speak(self, text: str, log_callback=None) -> bool:
         """Synthesizes speech (TTS) and plays it back asynchronously."""
@@ -301,9 +317,18 @@ class AsyncVoiceAgent:
                 if success:
                     return True
             except Exception as e:
-                print(f"edge-tts failed: {e}. Falling back to pyttsx3...")
+                print(f"edge-tts failed: {e}. Falling back to system TTS...")
                 if log_callback:
                     await log_callback("edge-tts lỗi, chuyển sang TTS hệ thống...")
+
+        if os.name == "nt":
+            try:
+                await self._speak_windows_sapi(text)
+                return True
+            except Exception as e:
+                print(f"Windows SAPI failed: {e}")
+                if log_callback:
+                    await log_callback(f"TTS Windows lỗi: {e}")
 
         if pyttsx3 is not None:
             try:
@@ -356,6 +381,39 @@ class AsyncVoiceAgent:
             print(f"Failed to clean up temp TTS file: {e}")
 
         return True
+
+    async def _speak_windows_sapi(self, text: str):
+        """Uses Windows System.Speech directly as an offline TTS fallback."""
+        text_b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
+        script = f"""
+$bytes = [Convert]::FromBase64String('{text_b64}')
+$text = [Text.Encoding]::UTF8.GetString($bytes)
+Add-Type -AssemblyName System.Speech
+$speaker = New-Object System.Speech.Synthesis.SpeechSynthesizer
+$speaker.Rate = 0
+$speaker.Volume = 100
+$speaker.Speak($text)
+"""
+        encoded_script = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+        timeout = max(15, min(90, len(text) // 8 + 15))
+
+        def _speak():
+            subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-EncodedCommand",
+                    encoded_script,
+                ],
+                check=True,
+                timeout=timeout,
+                capture_output=True,
+                text=True,
+            )
+
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, _speak)
 
     async def _speak_pyttsx3(self, text: str):
         """Runs pyttsx3 in an executor since it is synchronous."""

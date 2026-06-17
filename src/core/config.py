@@ -26,6 +26,20 @@ TELEMETRY_INTERVAL = float(os.getenv("AIOT_TELEMETRY_INTERVAL", "5.0"))
 DISPLAY_WIDTH = int(os.getenv("AIOT_DISPLAY_WIDTH", "1280"))
 DISPLAY_HEIGHT = int(os.getenv("AIOT_DISPLAY_HEIGHT", "800"))
 
+# XiaoZhi gateway settings. The gateway is opt-in and does not start unless
+# application code explicitly creates a gateway instance.
+XIAOZHI_GATEWAY_ENABLED = _env_bool("AIOT_XIAOZHI_GATEWAY_ENABLED", False)
+XIAOZHI_TRANSPORT = os.getenv("AIOT_XIAOZHI_TRANSPORT", "websocket")
+XIAOZHI_URL = os.getenv("AIOT_XIAOZHI_URL", "")
+XIAOZHI_TOKEN = os.getenv("AIOT_XIAOZHI_TOKEN", "")
+XIAOZHI_DEVICE_ID = os.getenv("AIOT_XIAOZHI_DEVICE_ID", "")
+XIAOZHI_CLIENT_ID = os.getenv("AIOT_XIAOZHI_CLIENT_ID", "")
+XIAOZHI_PROTOCOL_VERSION = int(os.getenv("AIOT_XIAOZHI_PROTOCOL_VERSION", "1"))
+XIAOZHI_MQTT_USERNAME = os.getenv("AIOT_XIAOZHI_MQTT_USERNAME", "")
+XIAOZHI_MQTT_PASSWORD = os.getenv("AIOT_XIAOZHI_MQTT_PASSWORD", "")
+XIAOZHI_MQTT_PUBLISH_TOPIC = os.getenv("AIOT_XIAOZHI_MQTT_PUBLISH_TOPIC", "")
+XIAOZHI_MQTT_SUBSCRIBE_TOPIC = os.getenv("AIOT_XIAOZHI_MQTT_SUBSCRIBE_TOPIC", "")
+
 # LLM Providers Configuration
 LLM_PROVIDERS = {
     "gemini": {

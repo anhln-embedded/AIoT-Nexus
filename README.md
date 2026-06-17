@@ -44,6 +44,18 @@ AIOT_CAMERA_JPEG_QUALITY=75
 AIOT_PORT_WIN=COM3
 AIOT_PORT_PI=/dev/serial0
 AIOT_BAUDRATE=115200
+
+AIOT_XIAOZHI_GATEWAY_ENABLED=false
+AIOT_XIAOZHI_TRANSPORT=websocket
+AIOT_XIAOZHI_URL=
+AIOT_XIAOZHI_TOKEN=
+AIOT_XIAOZHI_DEVICE_ID=
+AIOT_XIAOZHI_CLIENT_ID=
+AIOT_XIAOZHI_PROTOCOL_VERSION=1
+AIOT_XIAOZHI_MQTT_USERNAME=
+AIOT_XIAOZHI_MQTT_PASSWORD=
+AIOT_XIAOZHI_MQTT_PUBLISH_TOPIC=
+AIOT_XIAOZHI_MQTT_SUBSCRIBE_TOPIC=
 ```
 
 Important:
@@ -52,6 +64,16 @@ Important:
 - On Pi, the service sets `AIOT_IS_PI=true` automatically.
 - `AIOT_USE_UART=false` uses simulated hardware even on Pi.
 - If `AIOT_USE_UART` is unset on Pi, `launch-pi.sh` auto-detects `/dev/serial0`, `/dev/ttyUSB0`, then `/dev/ttyACM0`; if none exists, it falls back to simulation.
+
+XiaoZhi gateway:
+
+- `src/xiaozhi_gateway` contains an opt-in WebSocket/MQTT gateway for XiaoZhi-compatible backends.
+- The gateway maps AIoT-Nexus tools to MCP JSON-RPC `initialize`, `tools/list`, and `tools/call`.
+- Public tool names use the `self.aiot.*` prefix, for example `self.aiot.get_dht_data`, while direct local tool names are still accepted by the adapter.
+- WebSocket sends XiaoZhi-style headers: `Authorization`, `Protocol-Version`, `Device-Id`, and `Client-Id`.
+- WebSocket audio frames from XiaoZhi are decoded with PyAV and played directly through a PyAudio stream; local TTS is skipped for XiaoZhi responses when this path is available.
+- MQTT requires explicit publish and subscribe topics because self-hosted XiaoZhi-compatible servers can choose different topic layouts.
+- The gateway does not start automatically yet; create `XiaozhiWebSocketGateway` or `XiaozhiMqttGateway` from application code when you want to connect.
 
 Camera preview tuning:
 

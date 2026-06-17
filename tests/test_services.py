@@ -11,6 +11,11 @@ from src.hardware.uart import AsyncHardwareController
 from src.mcp.client import AsyncMcpClient
 from src.voice.agent import AsyncVoiceAgent
 from src.vision.agent import AsyncVisionAgent
+from src.xiaozhi_gateway import (
+    XiaozhiGatewayConfig,
+    XiaozhiMcpToolAdapter,
+    XiaozhiWebSocketGateway,
+)
 
 
 class FakeVision:
@@ -71,6 +76,76 @@ class McpTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("DHT22", answer)
         self.assertIsNone(frame)
+
+
+    async def test_xiaozhi_tools_list_and_call(self):
+        adapter = XiaozhiMcpToolAdapter(self.client)
+
+        tools_response = await adapter.handle_payload(
+            {
+                "jsonrpc": "2.0",
+                "method": "tools/list",
+                "params": {},
+                "id": 1,
+            }
+        )
+        tool_names = [tool["name"] for tool in tools_response["result"]["tools"]]
+        self.assertIn("self.aiot.get_dht_data", tool_names)
+
+        call_response = await adapter.handle_payload(
+            {
+                "jsonrpc": "2.0",
+                "method": "tools/call",
+                "params": {
+                    "name": "self.aiot.detect_faces",
+                    "arguments": {},
+                },
+                "id": 2,
+            }
+        )
+        content = call_response["result"]["content"][0]["text"]
+        self.assertIn("face_count", content)
+        self.assertNotIn("_b64_frame", content)
+
+    async def test_xiaozhi_gateway_wraps_mcp_response(self):
+        adapter = XiaozhiMcpToolAdapter(self.client)
+        gateway = XiaozhiWebSocketGateway(
+            XiaozhiGatewayConfig(url="ws://localhost:8000/xiaozhi"),
+            adapter,
+        )
+
+        response = await gateway.handle_json_message(
+            {
+                "session_id": "session-1",
+                "type": "mcp",
+                "payload": {
+                    "jsonrpc": "2.0",
+                    "method": "initialize",
+                    "params": {},
+                    "id": 1,
+                },
+            }
+        )
+
+        self.assertEqual(response["type"], "mcp")
+        self.assertEqual(response["session_id"], "session-1")
+        self.assertEqual(response["payload"]["result"]["serverInfo"]["name"], "AIoT-Nexus")
+
+    def test_xiaozhi_gateway_builds_websocket_headers(self):
+        gateway = XiaozhiWebSocketGateway(
+            XiaozhiGatewayConfig(
+                url="ws://localhost:8000/xiaozhi",
+                token="secret",
+                device_id="device-1",
+                client_id="client-1",
+            ),
+            XiaozhiMcpToolAdapter(self.client),
+        )
+
+        headers = gateway._headers()
+        self.assertEqual(headers["Authorization"], "Bearer secret")
+        self.assertEqual(headers["Device-Id"], "device-1")
+        self.assertEqual(headers["Client-Id"], "client-1")
 
 
 class VisionTests(unittest.IsolatedAsyncioTestCase):

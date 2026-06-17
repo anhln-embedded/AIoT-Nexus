@@ -30,11 +30,28 @@ from src.core.config import (
     PORT_WIN,
     TELEMETRY_INTERVAL,
     USE_REAL_UART,
+    XIAOZHI_CLIENT_ID,
+    XIAOZHI_DEVICE_ID,
+    XIAOZHI_GATEWAY_ENABLED,
+    XIAOZHI_MQTT_PASSWORD,
+    XIAOZHI_MQTT_PUBLISH_TOPIC,
+    XIAOZHI_MQTT_SUBSCRIBE_TOPIC,
+    XIAOZHI_MQTT_USERNAME,
+    XIAOZHI_PROTOCOL_VERSION,
+    XIAOZHI_TOKEN,
+    XIAOZHI_TRANSPORT,
+    XIAOZHI_URL,
 )
 from src.voice.agent import AsyncVoiceAgent
 from src.vision.agent import AsyncVisionAgent
 from src.hardware.uart import AsyncHardwareController
 from src.mcp.client import AsyncMcpClient
+from src.xiaozhi_gateway import (
+    XiaozhiGatewayConfig,
+    XiaozhiMcpToolAdapter,
+    XiaozhiMqttGateway,
+    XiaozhiWebSocketGateway,
+)
 
 class AsyncCoreEngine:
     def __init__(self):
@@ -59,6 +76,9 @@ class AsyncCoreEngine:
         self.api_base = provider["api_base"]
 
         self._poller_task = None
+        self._xiaozhi_gateway_task = None
+        self.xiaozhi_gateway = None
+        self._last_response_from_xiaozhi = False
         self._interaction_lock = asyncio.Lock()
 
     async def start(self):
@@ -70,6 +90,9 @@ class AsyncCoreEngine:
         if self.vision.is_enabled:
             self.vision.start_streaming()
         self._poller_task = asyncio.create_task(self._telemetry_poller_loop())
+        if XIAOZHI_GATEWAY_ENABLED:
+            self.xiaozhi_gateway = self._create_xiaozhi_gateway()
+            self._xiaozhi_gateway_task = asyncio.create_task(self._run_xiaozhi_gateway())
         await self.log_to_ui("Hệ thống AIoT-Nexus đã khởi động thành công.")
         await self.set_state("IDLE")
 
@@ -82,6 +105,12 @@ class AsyncCoreEngine:
             self._poller_task.cancel()
             try:
                 await self._poller_task
+            except asyncio.CancelledError:
+                pass
+        if self._xiaozhi_gateway_task:
+            self._xiaozhi_gateway_task.cancel()
+            try:
+                await self._xiaozhi_gateway_task
             except asyncio.CancelledError:
                 pass
         await self.hw.disconnect()
@@ -132,6 +161,38 @@ class AsyncCoreEngine:
                 print(f"Telemetry poller loop error: {e}")
             await asyncio.sleep(TELEMETRY_INTERVAL)
 
+    async def _run_xiaozhi_gateway(self):
+        try:
+            if self.xiaozhi_gateway is None:
+                self.xiaozhi_gateway = self._create_xiaozhi_gateway()
+            message = f"XiaoZhi gateway connecting via {XIAOZHI_TRANSPORT}..."
+            print(message)
+            await self.log_to_ui(message)
+            await self.xiaozhi_gateway.run_forever()
+        except asyncio.CancelledError:
+            await self.log_to_ui("XiaoZhi gateway stopped.")
+            raise
+        except Exception as e:
+            await self.log_to_ui(f"XiaoZhi gateway error: {e}")
+
+    def _create_xiaozhi_gateway(self):
+        config = XiaozhiGatewayConfig(
+            url=XIAOZHI_URL,
+            token=XIAOZHI_TOKEN,
+            transport=XIAOZHI_TRANSPORT,
+            protocol_version=XIAOZHI_PROTOCOL_VERSION,
+            device_id=XIAOZHI_DEVICE_ID,
+            client_id=XIAOZHI_CLIENT_ID,
+            mqtt_username=XIAOZHI_MQTT_USERNAME,
+            mqtt_password=XIAOZHI_MQTT_PASSWORD,
+            mqtt_publish_topic=XIAOZHI_MQTT_PUBLISH_TOPIC,
+            mqtt_subscribe_topic=XIAOZHI_MQTT_SUBSCRIBE_TOPIC,
+        )
+        adapter = XiaozhiMcpToolAdapter(self.mcp)
+        if XIAOZHI_TRANSPORT.lower() == "mqtt":
+            return XiaozhiMqttGateway(config, adapter, log_callback=self.log_to_ui)
+        return XiaozhiWebSocketGateway(config, adapter, log_callback=self.log_to_ui)
+
     async def handle_tool_execution_hook(self, name: str, b64_frame: str, result: dict):
         """
         Callback triggered by MCP when computer vision tools execute.
@@ -167,7 +228,27 @@ class AsyncCoreEngine:
     async def _run_voice_pipeline(self):
         try:
             await self.set_state("LISTENING")
-            user_text = await self.voice.listen(log_callback=self.log_to_ui)
+            if XIAOZHI_GATEWAY_ENABLED and self.xiaozhi_gateway:
+                audio_data = await self.voice.record_audio(log_callback=self.log_to_ui)
+                if audio_data is None:
+                    user_text = ""
+                else:
+                    await self.set_state("PROCESSING")
+                    await self.log_to_ui("Sending microphone audio to XiaoZhi...")
+                    print("Sending microphone audio to XiaoZhi...")
+                    raw_audio = audio_data.get_raw_data(
+                        convert_rate=self.xiaozhi_gateway.config.audio_sample_rate,
+                        convert_width=2,
+                    )
+                    ai_response = await self.xiaozhi_gateway.send_audio_query(
+                        raw_audio,
+                        sample_rate=self.xiaozhi_gateway.config.audio_sample_rate,
+                        sample_width=2,
+                    )
+                    self._last_response_from_xiaozhi = True
+                    user_text = "Âm thanh từ micro"
+            else:
+                user_text = await self.voice.listen(log_callback=self.log_to_ui)
             
             if not user_text.strip():
                 await self.log_to_ui("Không phát hiện câu nói hoặc không nghe rõ.")
@@ -176,24 +257,17 @@ class AsyncCoreEngine:
                 await self.set_state("IDLE")
                 return
 
-            await self.set_state("PROCESSING")
             await self.chat_to_ui("user", user_text)
             await self.log_to_ui(f"Bạn nói: \"{user_text}\"")
 
-            model_name = self._get_selected_model_string()
-            
-            ai_response, b64_frame = await self.mcp.chat(
-                prompt=user_text,
-                model_name=model_name,
-                api_key=self.api_key,
-                api_base=self.api_base,
-                tool_hook=self.handle_tool_execution_hook,
-                log_callback=self.log_to_ui
-            )
+            if not (XIAOZHI_GATEWAY_ENABLED and self.xiaozhi_gateway and self._last_response_from_xiaozhi):
+                await self.set_state("PROCESSING")
+                ai_response, b64_frame = await self._ask_assistant(user_text)
 
             await self.set_state("SPEAKING")
             await self.chat_to_ui("assistant", ai_response)
-            await self.voice.speak(ai_response, log_callback=self.log_to_ui)
+            if not self._last_response_from_xiaozhi:
+                await self.voice.speak(ai_response, log_callback=self.log_to_ui)
 
         except Exception as e:
             print(f"Error in core pipeline: {e}")
@@ -209,19 +283,12 @@ class AsyncCoreEngine:
             await self.chat_to_ui("user", user_text)
             await self.set_state("PROCESSING")
 
-            model_name = self._get_selected_model_string()
-            ai_response, b64_frame = await self.mcp.chat(
-                prompt=user_text,
-                model_name=model_name,
-                api_key=self.api_key,
-                api_base=self.api_base,
-                tool_hook=self.handle_tool_execution_hook,
-                log_callback=self.log_to_ui
-            )
+            ai_response, b64_frame = await self._ask_assistant(user_text)
 
             await self.chat_to_ui("assistant", ai_response)
             await self.set_state("SPEAKING")
-            await self.voice.speak(ai_response, log_callback=self.log_to_ui)
+            if not self._last_response_from_xiaozhi:
+                await self.voice.speak(ai_response, log_callback=self.log_to_ui)
 
         except Exception as e:
             print(f"Error in text pipeline: {e}")
@@ -232,6 +299,34 @@ class AsyncCoreEngine:
         finally:
             await self.set_state("IDLE")
             await self.broadcast_telemetry()
+
+    async def _ask_assistant(self, user_text: str) -> tuple[str, Optional[str]]:
+        self._last_response_from_xiaozhi = False
+        if XIAOZHI_GATEWAY_ENABLED and self.xiaozhi_gateway:
+            audio_status = "on" if self._xiaozhi_remote_audio_enabled() else "off"
+            message = f"Sending question to XiaoZhi... remote_audio={audio_status}"
+            print(message)
+            await self.log_to_ui(message)
+            response = await self.xiaozhi_gateway.send_text_query(user_text, timeout=12.0)
+            self._last_response_from_xiaozhi = True
+            return response, None
+
+        model_name = self._get_selected_model_string()
+        return await self.mcp.chat(
+            prompt=user_text,
+            model_name=model_name,
+            api_key=self.api_key,
+            api_base=self.api_base,
+            tool_hook=self.handle_tool_execution_hook,
+            log_callback=self.log_to_ui
+        )
+
+    def _xiaozhi_remote_audio_enabled(self) -> bool:
+        return bool(
+            XIAOZHI_GATEWAY_ENABLED
+            and self.xiaozhi_gateway
+            and getattr(self.xiaozhi_gateway, "plays_remote_audio", False)
+        )
 
     def _get_selected_model_string(self) -> str:
         """Retrieves model string based on UI selection."""
