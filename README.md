@@ -121,6 +121,12 @@ Run tests:
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
+Generate a XiaoZhi activation code and `.env` block:
+
+```powershell
+.\.venv\Scripts\python.exe .\tools\xiaozhi_registration_tool.py
+```
+
 ## Install on Raspberry Pi
 
 Recommended OS: Raspberry Pi OS 64-bit Desktop. Desktop autologin should be enabled for the fullscreen UI service.
