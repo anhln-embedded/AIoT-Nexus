@@ -1,9 +1,10 @@
 import asyncio
 import json
+import struct
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, AsyncIterable, Awaitable, Callable, Optional
 
 from src.xiaozhi_gateway.audio_player import XiaozhiAudioPlayer
 from src.xiaozhi_gateway.mcp_adapter import XiaozhiMcpToolAdapter
@@ -47,8 +48,11 @@ class XiaozhiGatewayBase:
         self.client_id = config.resolved_client_id()
         self._ready = asyncio.Event()
         self._mcp_initialized = asyncio.Event()
+        self._speech_finished = asyncio.Event()
+        self._speech_finished.set()
         self._outgoing: asyncio.Queue[dict[str, Any] | bytes | None] = asyncio.Queue()
         self._text_events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self.speech_state_callback: LogCallback = None
         self._logged_binary_audio = False
         self.audio_player = XiaozhiAudioPlayer(
             sample_rate=config.audio_sample_rate,
@@ -56,6 +60,15 @@ class XiaozhiGatewayBase:
             log_callback=log_callback,
         )
         self.plays_remote_audio = self.audio_player.is_available
+
+    async def wait_for_speech_finished(self, timeout: float = 30.0) -> bool:
+        try:
+            await asyncio.wait_for(self._speech_finished.wait(), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            await self._log("Timed out waiting for XiaoZhi TTS stop")
+            self._speech_finished.set()
+            return False
 
     def build_hello(self) -> dict[str, Any]:
         return {
@@ -149,6 +162,7 @@ class XiaozhiGatewayBase:
         except asyncio.TimeoutError:
             await self._log("XiaoZhi MCP initialize was not observed before query; continuing")
         self._drain_text_events()
+        self._speech_finished.set()
 
         await self._outgoing.put(
             {
@@ -168,6 +182,28 @@ class XiaozhiGatewayBase:
         sample_width: int = 2,
         timeout: float = 30.0,
         sentence_idle_timeout: float = 2.0,
+        listen_mode: str = "auto",
+    ) -> str:
+        async def _single_chunk():
+            yield pcm_bytes
+
+        return await self.send_audio_stream_query(
+            _single_chunk(),
+            sample_rate=sample_rate,
+            sample_width=sample_width,
+            timeout=timeout,
+            sentence_idle_timeout=sentence_idle_timeout,
+            listen_mode=listen_mode,
+        )
+
+    async def send_audio_stream_query(
+        self,
+        pcm_frames: AsyncIterable[bytes],
+        sample_rate: int = 16000,
+        sample_width: int = 2,
+        timeout: float = 30.0,
+        sentence_idle_timeout: float = 2.0,
+        listen_mode: str = "auto",
     ) -> str:
         await asyncio.wait_for(self._ready.wait(), timeout=timeout)
         try:
@@ -175,17 +211,36 @@ class XiaozhiGatewayBase:
         except asyncio.TimeoutError:
             await self._log("XiaoZhi MCP initialize was not observed before audio query; continuing")
         self._drain_text_events()
+        self._speech_finished.set()
 
+        encoder = self._create_opus_encoder(sample_rate, sample_width)
+        audio_packets_sent = 0
+        audio_bytes_sent = 0
         await self._outgoing.put(
             {
                 "session_id": self.session_id,
                 "type": "listen",
                 "state": "start",
-                "mode": "manual",
+                "mode": listen_mode,
             }
         )
-        for packet in self._encode_pcm_to_opus(pcm_bytes, sample_rate, sample_width):
-            await self._outgoing.put(packet)
+        async for pcm_frame in pcm_frames:
+            if not pcm_frame:
+                continue
+            packets = self._encode_pcm_chunk_to_opus(encoder, pcm_frame, sample_rate, sample_width)
+            if not packets:
+                continue
+            for packet in packets:
+                wrapped_packet = self._wrap_binary_audio_packet(packet)
+                audio_packets_sent += 1
+                audio_bytes_sent += len(wrapped_packet)
+                await self._outgoing.put(wrapped_packet)
+
+        for packet in self._flush_opus_encoder(encoder):
+            wrapped_packet = self._wrap_binary_audio_packet(packet)
+            audio_packets_sent += 1
+            audio_bytes_sent += len(wrapped_packet)
+            await self._outgoing.put(wrapped_packet)
         await self._outgoing.put(
             {
                 "session_id": self.session_id,
@@ -193,13 +248,89 @@ class XiaozhiGatewayBase:
                 "state": "stop",
             }
         )
+        await self._log_audio_send_summary(audio_packets_sent, audio_bytes_sent)
 
         return await self._collect_text_response(timeout, sentence_idle_timeout)
+
+    def _wrap_binary_audio_packet(self, packet: bytes) -> bytes:
+        version = int(self.config.protocol_version or 1)
+        if version == 2:
+            timestamp = int(time.monotonic() * 1000) & 0xFFFFFFFF
+            return struct.pack("!HHIII", version, 0, 0, timestamp, len(packet)) + packet
+        if version == 3:
+            return struct.pack("!BBH", 0, 0, len(packet)) + packet
+        return packet
+
+    def _unwrap_binary_audio_packet(self, packet: bytes) -> bytes:
+        version = int(self.config.protocol_version or 1)
+        if version == 2 and len(packet) >= 16:
+            _, message_type, _, _, payload_size = struct.unpack("!HHIII", packet[:16])
+            if message_type == 0 and len(packet) >= 16 + payload_size:
+                return packet[16 : 16 + payload_size]
+        if version == 3 and len(packet) >= 4:
+            message_type, _, payload_size = struct.unpack("!BBH", packet[:4])
+            if message_type == 0 and len(packet) >= 4 + payload_size:
+                return packet[4 : 4 + payload_size]
+        return packet
+
+    async def _log_audio_send_summary(self, packet_count: int, byte_count: int):
+        await self._log(
+            "XiaoZhi microphone upload: "
+            f"packets={packet_count}, bytes={byte_count}, protocol_version={self.config.protocol_version}"
+        )
+        if packet_count == 0:
+            await self._log("XiaoZhi microphone upload had no Opus packets")
+
+    def _create_opus_encoder(self, sample_rate: int, sample_width: int):
+        import av
+
+        if sample_width != 2:
+            raise ValueError("Only 16-bit PCM audio is supported")
+
+        codec = av.CodecContext.create("libopus", "w")
+        codec.sample_rate = sample_rate
+        codec.layout = "mono"
+        codec.format = "s16"
+        codec.open()
+        return codec
+
+    def _encode_pcm_chunk_to_opus(
+        self,
+        codec,
+        pcm_bytes: bytes,
+        sample_rate: int,
+        sample_width: int,
+    ) -> list[bytes]:
+        import av
+        import numpy as np
+
+        if sample_width != 2:
+            raise ValueError("Only 16-bit PCM audio is supported")
+
+        samples = np.frombuffer(pcm_bytes, dtype=np.int16)
+        frame_size = int(sample_rate * self.config.audio_frame_duration / 1000)
+        if len(samples) < frame_size:
+            samples = np.pad(samples, (0, frame_size - len(samples)))
+        packets: list[bytes] = []
+        for offset in range(0, len(samples), frame_size):
+            chunk = samples[offset : offset + frame_size]
+            if len(chunk) < frame_size:
+                chunk = np.pad(chunk, (0, frame_size - len(chunk)))
+            frame = av.AudioFrame.from_ndarray(chunk.reshape(1, -1), format="s16", layout="mono")
+            frame.sample_rate = sample_rate
+            for packet in codec.encode(frame):
+                packets.append(bytes(packet))
+        return packets
+
+    def _flush_opus_encoder(self, codec) -> list[bytes]:
+        return [bytes(packet) for packet in codec.encode(None)]
 
     async def _collect_text_response(self, timeout: float, sentence_idle_timeout: float) -> str:
         deadline = time.monotonic() + timeout
         sentence_deadline = None
         stt_text = ""
+        tts_started = False
+        tts_stopped = False
         response_parts: list[str] = []
         while time.monotonic() < deadline:
             wait_until = min(
@@ -216,12 +347,23 @@ class XiaozhiGatewayBase:
 
             if event["type"] == "stt":
                 stt_text = event.get("text", "")
+            elif event["type"] == "tts_start":
+                tts_started = True
+                sentence_deadline = None
             elif event["type"] == "sentence":
                 sentence = event.get("text", "")
                 if sentence:
                     response_parts.append(sentence)
-                    sentence_deadline = time.monotonic() + sentence_idle_timeout
+                    if event.get("source") == "tts":
+                        tts_started = True
+                        sentence_deadline = None
+                    else:
+                        sentence_deadline = time.monotonic() + sentence_idle_timeout
             elif event["type"] == "tts_stop" and response_parts:
+                tts_stopped = True
+                break
+            elif event["type"] == "tts_stop":
+                tts_stopped = True
                 break
             elif event["type"] == "alert":
                 alert_text = event.get("text", "")
@@ -229,9 +371,13 @@ class XiaozhiGatewayBase:
                     break
                 if alert_text:
                     return alert_text
+            if tts_started:
+                sentence_deadline = None
 
         if response_parts:
             return "".join(response_parts).strip()
+        if tts_started or tts_stopped:
+            return "XiaoZhi audio response"
         if stt_text:
             return f"XiaoZhi received: {stt_text}"
         raise TimeoutError("XiaoZhi did not return a text response")
@@ -242,31 +388,10 @@ class XiaozhiGatewayBase:
         sample_rate: int,
         sample_width: int,
     ) -> list[bytes]:
-        import av
-        import numpy as np
-
-        if sample_width != 2:
-            raise ValueError("Only 16-bit PCM audio is supported")
-
-        codec = av.CodecContext.create("libopus", "w")
-        codec.sample_rate = sample_rate
-        codec.layout = "mono"
-        codec.format = "s16"
-        codec.open()
-
-        samples = np.frombuffer(pcm_bytes, dtype=np.int16)
-        frame_size = int(sample_rate * self.config.audio_frame_duration / 1000)
         packets: list[bytes] = []
-        for offset in range(0, len(samples), frame_size):
-            chunk = samples[offset : offset + frame_size]
-            if len(chunk) < frame_size:
-                chunk = np.pad(chunk, (0, frame_size - len(chunk)))
-            frame = av.AudioFrame.from_ndarray(chunk.reshape(1, -1), format="s16", layout="mono")
-            frame.sample_rate = sample_rate
-            for packet in codec.encode(frame):
-                packets.append(bytes(packet))
-        for packet in codec.encode(None):
-            packets.append(bytes(packet))
+        codec = self._create_opus_encoder(sample_rate, sample_width)
+        packets.extend(self._encode_pcm_chunk_to_opus(codec, pcm_bytes, sample_rate, sample_width))
+        packets.extend(self._flush_opus_encoder(codec))
         return packets
 
     async def close(self):
@@ -292,11 +417,18 @@ class XiaozhiGatewayBase:
                 await self._text_events.put({"type": "sentence", "text": text})
         elif message_type == "tts":
             state = message.get("state")
-            if state == "sentence_start":
+            if state == "start":
+                self._speech_finished.clear()
+                await self._notify_speech_state("SPEAKING")
+                await self._text_events.put({"type": "tts_start"})
+            elif state == "sentence_start":
                 text = message.get("text", "")
-                await self._text_events.put({"type": "sentence", "text": text})
+                self._speech_finished.clear()
+                await self._notify_speech_state("SPEAKING")
+                await self._text_events.put({"type": "sentence", "text": text, "source": "tts"})
                 await self._log(f"XiaoZhi: {text}")
             elif state == "stop":
+                self._speech_finished.set()
                 await self._text_events.put({"type": "tts_stop"})
         elif message_type == "alert":
             status = message.get("status", "Alert")
@@ -311,6 +443,10 @@ class XiaozhiGatewayBase:
                 self._text_events.get_nowait()
             except asyncio.QueueEmpty:
                 return
+
+    async def _notify_speech_state(self, state: str):
+        if self.speech_state_callback:
+            await self.speech_state_callback(state)
 
 
 class XiaozhiWebSocketGateway(XiaozhiGatewayBase):
@@ -346,7 +482,9 @@ class XiaozhiWebSocketGateway(XiaozhiGatewayBase):
                     if not self._logged_binary_audio:
                         await self._log("Playing XiaoZhi audio stream from server")
                         self._logged_binary_audio = True
-                    await self.audio_player.play_opus_frame(raw_message)
+                    await self.audio_player.play_opus_frame(
+                        self._unwrap_binary_audio_packet(raw_message)
+                    )
                     continue
 
                 try:

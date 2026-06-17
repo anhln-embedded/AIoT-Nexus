@@ -190,8 +190,11 @@ class AsyncCoreEngine:
         )
         adapter = XiaozhiMcpToolAdapter(self.mcp)
         if XIAOZHI_TRANSPORT.lower() == "mqtt":
-            return XiaozhiMqttGateway(config, adapter, log_callback=self.log_to_ui)
-        return XiaozhiWebSocketGateway(config, adapter, log_callback=self.log_to_ui)
+            gateway = XiaozhiMqttGateway(config, adapter, log_callback=self.log_to_ui)
+        else:
+            gateway = XiaozhiWebSocketGateway(config, adapter, log_callback=self.log_to_ui)
+        gateway.speech_state_callback = self._handle_xiaozhi_speech_state
+        return gateway
 
     async def handle_tool_execution_hook(self, name: str, b64_frame: str, result: dict):
         """
@@ -229,24 +232,8 @@ class AsyncCoreEngine:
         try:
             await self.set_state("LISTENING")
             if XIAOZHI_GATEWAY_ENABLED and self.xiaozhi_gateway:
-                audio_data = await self.voice.record_audio(log_callback=self.log_to_ui)
-                if audio_data is None:
-                    user_text = ""
-                else:
-                    await self.set_state("PROCESSING")
-                    await self.log_to_ui("Sending microphone audio to XiaoZhi...")
-                    print("Sending microphone audio to XiaoZhi...")
-                    raw_audio = audio_data.get_raw_data(
-                        convert_rate=self.xiaozhi_gateway.config.audio_sample_rate,
-                        convert_width=2,
-                    )
-                    ai_response = await self.xiaozhi_gateway.send_audio_query(
-                        raw_audio,
-                        sample_rate=self.xiaozhi_gateway.config.audio_sample_rate,
-                        sample_width=2,
-                    )
-                    self._last_response_from_xiaozhi = True
-                    user_text = "Âm thanh từ micro"
+                await self._run_xiaozhi_conversation_loop()
+                return
             else:
                 user_text = await self.voice.listen(log_callback=self.log_to_ui)
             
@@ -268,6 +255,8 @@ class AsyncCoreEngine:
             await self.chat_to_ui("assistant", ai_response)
             if not self._last_response_from_xiaozhi:
                 await self.voice.speak(ai_response, log_callback=self.log_to_ui)
+            else:
+                await self._wait_for_xiaozhi_speech_finished()
 
         except Exception as e:
             print(f"Error in core pipeline: {e}")
@@ -277,6 +266,67 @@ class AsyncCoreEngine:
         finally:
             await self.set_state("IDLE")
             await self.broadcast_telemetry()
+
+    async def _run_xiaozhi_conversation_loop(self):
+        turn = 0
+        while True:
+            await self.set_state("LISTENING")
+            try:
+                user_text, ai_response = await self._run_xiaozhi_voice_pipeline(
+                    response_timeout=30.0 if turn == 0 else 8.0,
+                )
+            except TimeoutError:
+                if turn == 0:
+                    raise
+                await self.log_to_ui("XiaoZhi không nghe thấy câu tiếp theo, kết thúc hội thoại.")
+                break
+
+            if not user_text.strip():
+                break
+
+            await self.chat_to_ui("user", user_text)
+            await self.log_to_ui(f"Báº¡n nÃ³i: \"{user_text}\"")
+            await self.set_state("SPEAKING")
+            await self.chat_to_ui("assistant", ai_response)
+            await self._wait_for_xiaozhi_speech_finished()
+
+            turn += 1
+            if not self.is_running:
+                break
+
+    async def _run_xiaozhi_voice_pipeline(self, response_timeout: float = 30.0) -> tuple[str, str]:
+        await self.log_to_ui("Streaming microphone audio to XiaoZhi...")
+        print("Streaming microphone audio to XiaoZhi...")
+
+        async def audio_frames():
+            async for frame in self.voice.stream_microphone_pcm_frames(
+                sample_rate=self.xiaozhi_gateway.config.audio_sample_rate,
+                frame_duration_ms=self.xiaozhi_gateway.config.audio_frame_duration,
+                channels=self.xiaozhi_gateway.config.audio_channels,
+                log_callback=self.log_to_ui,
+            ):
+                yield frame
+            await self.set_state("PROCESSING")
+
+        ai_response = await self.xiaozhi_gateway.send_audio_stream_query(
+            audio_frames(),
+            sample_rate=self.xiaozhi_gateway.config.audio_sample_rate,
+            sample_width=2,
+            timeout=response_timeout,
+            listen_mode="auto",
+        )
+        self._last_response_from_xiaozhi = True
+        if not ai_response:
+            return "", ""
+        return "Âm thanh từ micro", ai_response
+
+    async def _handle_xiaozhi_speech_state(self, state: str):
+        if state == "SPEAKING":
+            await self.set_state("SPEAKING")
+
+    async def _wait_for_xiaozhi_speech_finished(self):
+        if self.xiaozhi_gateway and hasattr(self.xiaozhi_gateway, "wait_for_speech_finished"):
+            await self.xiaozhi_gateway.wait_for_speech_finished()
 
     async def _run_text_pipeline(self, user_text: str):
         try:
@@ -289,6 +339,8 @@ class AsyncCoreEngine:
             await self.set_state("SPEAKING")
             if not self._last_response_from_xiaozhi:
                 await self.voice.speak(ai_response, log_callback=self.log_to_ui)
+            else:
+                await self._wait_for_xiaozhi_speech_finished()
 
         except Exception as e:
             error_message = str(e) or e.__class__.__name__

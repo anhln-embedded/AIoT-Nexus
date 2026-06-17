@@ -147,6 +147,81 @@ class McpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(headers["Device-Id"], "device-1")
         self.assertEqual(headers["Client-Id"], "client-1")
 
+    async def test_xiaozhi_gateway_streams_audio_frames_as_binary(self):
+        adapter = XiaozhiMcpToolAdapter(self.client)
+        gateway = XiaozhiWebSocketGateway(
+            XiaozhiGatewayConfig(url="ws://localhost:8000/xiaozhi"),
+            adapter,
+        )
+        gateway._ready.set()
+        gateway._mcp_initialized.set()
+        gateway.session_id = "session-1"
+        gateway._encode_pcm_chunk_to_opus = lambda *args: [b"opus-frame"]
+        gateway._flush_opus_encoder = lambda encoder: [b"opus-tail"]
+        gateway._create_opus_encoder = lambda *args: object()
+
+        async def frames():
+            yield b"pcm-frame"
+            await gateway._text_events.put({"type": "sentence", "text": "Xin chao"})
+            await gateway._text_events.put({"type": "tts_stop"})
+
+        response = await gateway.send_audio_stream_query(frames(), timeout=1.0)
+        queued = [
+            await gateway._outgoing.get(),
+            await gateway._outgoing.get(),
+            await gateway._outgoing.get(),
+            await gateway._outgoing.get(),
+        ]
+
+        self.assertEqual(response, "Xin chao")
+        self.assertEqual(queued[0]["type"], "listen")
+        self.assertEqual(queued[0]["state"], "start")
+        self.assertEqual(queued[0]["mode"], "auto")
+        self.assertEqual(queued[1], b"opus-frame")
+        self.assertEqual(queued[2], b"opus-tail")
+        self.assertEqual(queued[3]["state"], "stop")
+
+    def test_xiaozhi_gateway_wraps_binary_audio_for_protocol_versions(self):
+        adapter = XiaozhiMcpToolAdapter(self.client)
+        gateway_v2 = XiaozhiWebSocketGateway(
+            XiaozhiGatewayConfig(url="ws://localhost:8000/xiaozhi", protocol_version=2),
+            adapter,
+        )
+        gateway_v3 = XiaozhiWebSocketGateway(
+            XiaozhiGatewayConfig(url="ws://localhost:8000/xiaozhi", protocol_version=3),
+            adapter,
+        )
+
+        wrapped_v2 = gateway_v2._wrap_binary_audio_packet(b"opus")
+        wrapped_v3 = gateway_v3._wrap_binary_audio_packet(b"opus")
+
+        self.assertEqual(gateway_v2._unwrap_binary_audio_packet(wrapped_v2), b"opus")
+        self.assertEqual(gateway_v3._unwrap_binary_audio_packet(wrapped_v3), b"opus")
+        self.assertNotEqual(wrapped_v2, b"opus")
+        self.assertNotEqual(wrapped_v3, b"opus")
+
+    async def test_xiaozhi_gateway_accepts_audio_only_tts_response(self):
+        adapter = XiaozhiMcpToolAdapter(self.client)
+        gateway = XiaozhiWebSocketGateway(
+            XiaozhiGatewayConfig(url="ws://localhost:8000/xiaozhi"),
+            adapter,
+        )
+        gateway._ready.set()
+        gateway._mcp_initialized.set()
+        gateway.session_id = "session-1"
+        gateway._encode_pcm_chunk_to_opus = lambda *args: [b"opus-frame"]
+        gateway._flush_opus_encoder = lambda encoder: []
+        gateway._create_opus_encoder = lambda *args: object()
+
+        async def frames():
+            yield b"pcm-frame"
+            await gateway._text_events.put({"type": "tts_start"})
+            await gateway._text_events.put({"type": "tts_stop"})
+
+        response = await gateway.send_audio_stream_query(frames(), timeout=1.0)
+
+        self.assertEqual(response, "XiaoZhi audio response")
+
 
 class VisionTests(unittest.IsolatedAsyncioTestCase):
     async def test_color_detection_on_synthetic_frame(self):
@@ -289,6 +364,84 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
         core = AsyncCoreEngine()
         with self.assertRaises(ValueError):
             core.update_llm_settings("unknown", "")
+
+    async def test_xiaozhi_voice_pipeline_streams_microphone_audio(self):
+        class FakeGateway:
+            def __init__(self):
+                self.config = XiaozhiGatewayConfig()
+                self.plays_remote_audio = True
+                self.streamed_frames = []
+
+            async def send_audio_stream_query(self, frames, sample_rate, sample_width, **kwargs):
+                self.sample_rate = sample_rate
+                self.sample_width = sample_width
+                self.listen_mode = kwargs.get("listen_mode")
+                async for frame in frames:
+                    self.streamed_frames.append(frame)
+                return "XiaoZhi response"
+
+        async def fake_frames(**kwargs):
+            yield b"pcm-frame"
+
+        core = AsyncCoreEngine()
+        core.xiaozhi_gateway = FakeGateway()
+        core.voice.stream_microphone_pcm_frames = fake_frames
+        core.voice.listen = AsyncMock()
+        core.voice.speak = AsyncMock()
+        core.broadcast_telemetry = AsyncMock()
+
+        with patch("src.core.engine.XIAOZHI_GATEWAY_ENABLED", True):
+            await core._run_voice_pipeline()
+
+        core.voice.listen.assert_not_awaited()
+        core.voice.speak.assert_not_awaited()
+        self.assertEqual(core.xiaozhi_gateway.streamed_frames, [b"pcm-frame"])
+        self.assertEqual(core.xiaozhi_gateway.sample_rate, core.xiaozhi_gateway.config.audio_sample_rate)
+        self.assertEqual(core.xiaozhi_gateway.sample_width, 2)
+        self.assertEqual(core.xiaozhi_gateway.listen_mode, "auto")
+
+    async def test_xiaozhi_voice_pipeline_auto_continues_after_tts_stop(self):
+        class FakeGateway:
+            def __init__(self):
+                self.config = XiaozhiGatewayConfig()
+                self.plays_remote_audio = True
+                self.tts_stop = asyncio.Event()
+                self.wait_started = asyncio.Event()
+                self.calls = 0
+
+            async def send_audio_stream_query(self, frames, sample_rate, sample_width, **kwargs):
+                async for _frame in frames:
+                    pass
+                self.calls += 1
+                if self.calls == 1:
+                    return "XiaoZhi response"
+                raise TimeoutError("No follow-up speech")
+
+            async def wait_for_speech_finished(self):
+                self.wait_started.set()
+                await self.tts_stop.wait()
+
+        async def fake_frames(**kwargs):
+            yield b"pcm-frame"
+
+        core = AsyncCoreEngine()
+        core.is_running = True
+        core.xiaozhi_gateway = FakeGateway()
+        core.voice.stream_microphone_pcm_frames = fake_frames
+        core.voice.listen = AsyncMock()
+        core.voice.speak = AsyncMock()
+        core.broadcast_telemetry = AsyncMock()
+
+        with patch("src.core.engine.XIAOZHI_GATEWAY_ENABLED", True):
+            task = asyncio.create_task(core._run_voice_pipeline())
+            await asyncio.wait_for(core.xiaozhi_gateway.wait_started.wait(), timeout=1.0)
+            self.assertEqual(core.state, "SPEAKING")
+            self.assertFalse(task.done())
+            core.xiaozhi_gateway.tts_stop.set()
+            await task
+
+        self.assertEqual(core.state, "IDLE")
+        self.assertEqual(core.xiaozhi_gateway.calls, 2)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 import asyncio
+import audioop
 import base64
 import builtins
 import os
@@ -301,6 +302,96 @@ class AsyncVoiceAgent:
             if log_callback:
                 await log_callback(f"Lỗi ghi âm: {str(e)}")
             return None
+
+    async def stream_microphone_pcm_frames(
+        self,
+        sample_rate: int,
+        frame_duration_ms: int,
+        log_callback=None,
+        sample_width: int = 2,
+        channels: int = 1,
+        listen_timeout: float = 8.0,
+        phrase_time_limit: float = 10.0,
+        silence_duration: float = 1.0,
+    ):
+        """Streams microphone PCM frames directly for XiaoZhi, without local STT."""
+        if sample_width != 2:
+            raise ValueError("Only 16-bit PCM microphone streaming is supported")
+        if channels != 1:
+            raise ValueError("Only mono microphone streaming is supported")
+
+        try:
+            import pyaudio
+        except ImportError as exc:
+            raise RuntimeError("PyAudio is required for XiaoZhi microphone streaming") from exc
+
+        if log_callback:
+            await log_callback("Preparing microphone stream for XiaoZhi...")
+            await log_callback(
+                f"Microphone in use: {self.get_microphone_label(self._get_effective_microphone_index())}"
+            )
+
+        frame_samples = max(1, int(sample_rate * frame_duration_ms / 1000))
+        audio = pyaudio.PyAudio()
+        stream = None
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
+        speech_started_at = None
+        silence_started_at = None
+        threshold = max(300, int(self.recognizer.energy_threshold))
+        noise_samples = []
+
+        try:
+            stream = audio.open(
+                format=pyaudio.paInt16,
+                channels=channels,
+                rate=sample_rate,
+                input=True,
+                input_device_index=self._get_effective_microphone_index(),
+                frames_per_buffer=frame_samples,
+            )
+            if log_callback:
+                await log_callback("Streaming microphone audio to XiaoZhi...")
+
+            while True:
+                now = loop.time()
+                if speech_started_at is None and now - started_at >= listen_timeout:
+                    return
+                if speech_started_at is not None and now - speech_started_at >= phrase_time_limit:
+                    return
+
+                chunk = await asyncio.to_thread(
+                    stream.read,
+                    frame_samples,
+                    exception_on_overflow=False,
+                )
+                rms = audioop.rms(chunk, sample_width) if chunk else 0
+
+                if speech_started_at is None:
+                    if now - started_at < 0.4:
+                        noise_samples.append(rms)
+                        if noise_samples:
+                            threshold = max(threshold, int(max(noise_samples) * 2.5))
+                    if rms >= threshold:
+                        speech_started_at = now
+
+                yield chunk
+
+                if speech_started_at is None:
+                    continue
+
+                if rms < threshold:
+                    if silence_started_at is None:
+                        silence_started_at = now
+                    elif now - silence_started_at >= silence_duration:
+                        return
+                else:
+                    silence_started_at = None
+        finally:
+            if stream is not None:
+                stream.stop_stream()
+                stream.close()
+            audio.terminate()
 
     async def speak(self, text: str, log_callback=None) -> bool:
         """Synthesizes speech (TTS) and plays it back asynchronously."""
