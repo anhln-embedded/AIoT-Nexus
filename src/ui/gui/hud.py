@@ -108,21 +108,48 @@ async def main_hud(page: ft.Page):
     
     # --- Left Panel UI Components (Glowing Status Eye) ---
     brand_logo = ft.Image(
-        src="assets/logo/Logo_PTIT_University_transparent.png",
-        width=78,
-        height=78,
+        src="assets/logo/PTIT_logo_transparent.png",
+        width=42,
+        height=52,
         fit=getattr(ft, "ImageFit", ft.BoxFit).CONTAIN,
         gapless_playback=True,
     )
 
     brand_header = ft.Container(
-        width=96,
-        height=76,
+        width=292,
+        height=58,
         alignment=ft.Alignment.CENTER,
-        content=brand_logo,
+        content=ft.Row(
+            controls=[
+                brand_logo,
+                ft.Column(
+                    controls=[
+                        ft.Text(
+                            "HỌC VIỆN CÔNG NGHỆ BƯU CHÍNH VIỄN THÔNG",
+                            size=8.2,
+                            color="#E5252A",
+                            weight=ft.FontWeight.BOLD,
+                            no_wrap=True,
+                        ),
+                        ft.Text(
+                            "Posts and Telecommunications Institute of Technology",
+                            size=6.7,
+                            color="#E8EEF2",
+                            weight=ft.FontWeight.BOLD,
+                            no_wrap=True,
+                        ),
+                    ],
+                    spacing=1,
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    horizontal_alignment=ft.CrossAxisAlignment.START,
+                    width=218,
+                ),
+            ],
+            spacing=8,
+            alignment=ft.MainAxisAlignment.CENTER,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        ),
     )
-
-    brand_gap = ft.Container(height=24)
 
     state_icon = ft.Icon(ft.Icons.MIC, size=64, color="#66FCF1")
     
@@ -669,20 +696,32 @@ async def main_hud(page: ft.Page):
     update_chat_send_button()
 
     # --- Page Layout Assembly ---
-    left_column = ft.Column(
+    microphone_cluster = ft.Column(
         horizontal_alignment=ft.CrossAxisAlignment.CENTER,
         alignment=ft.MainAxisAlignment.CENTER,
         spacing=10,
-        width=300,
         controls=[
-            brand_header,
-            brand_gap,
             glow_indicator,
             status_gap,
             status_badge,
             microphone_gap,
             microphone_controls,
-            ft.Divider(height=10, color="transparent"),
+        ],
+    )
+
+    left_column = ft.Column(
+        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+        alignment=ft.MainAxisAlignment.START,
+        spacing=10,
+        expand=True,
+        width=300,
+        controls=[
+            brand_header,
+            ft.Container(
+                expand=True,
+                alignment=ft.Alignment.CENTER,
+                content=microphone_cluster,
+            ),
             ft.Row([temp_card, hum_card], spacing=10, alignment=ft.MainAxisAlignment.CENTER),
         ]
     )
