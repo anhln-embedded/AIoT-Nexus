@@ -438,18 +438,9 @@ async def main_hud(page: ft.Page):
     )
 
     def append_log(message: str):
-        chat_list.controls.append(
-            ft.Container(
-                alignment=ft.Alignment.CENTER_LEFT,
-                content=ft.Text(
-                    f">> {message}",
-                    size=10,
-                    color="#6F858C",
-                    font_family="monospace",
-                ),
-            )
-        )
-        page.update()
+        # Keep the conversation panel focused on chat bubbles only.
+        # Technical logs still go to the terminal via print statements.
+        return
 
     def append_chat_message(role: str, message: str):
         is_user = role == "user"

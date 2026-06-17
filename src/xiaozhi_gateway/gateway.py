@@ -138,8 +138,12 @@ class XiaozhiGatewayBase:
         text: str,
         timeout: float = 30.0,
         sentence_idle_timeout: float = 2.0,
+        ready_timeout: float = 15.0,
     ) -> str:
-        await asyncio.wait_for(self._ready.wait(), timeout=timeout)
+        try:
+            await asyncio.wait_for(self._ready.wait(), timeout=ready_timeout)
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError("XiaoZhi gateway is not connected yet") from exc
         try:
             await asyncio.wait_for(self._mcp_initialized.wait(), timeout=3.0)
         except asyncio.TimeoutError:
@@ -268,6 +272,13 @@ class XiaozhiGatewayBase:
     async def close(self):
         self.audio_player.close()
         await self._outgoing.put(None)
+
+    async def wait_ready(self, timeout: float = 8.0) -> bool:
+        try:
+            await asyncio.wait_for(self._ready.wait(), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
 
     async def _handle_text_event(self, message: dict[str, Any]):
         message_type = message.get("type")

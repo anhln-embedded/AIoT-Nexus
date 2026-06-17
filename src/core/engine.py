@@ -291,11 +291,13 @@ class AsyncCoreEngine:
                 await self.voice.speak(ai_response, log_callback=self.log_to_ui)
 
         except Exception as e:
-            print(f"Error in text pipeline: {e}")
-            await self.log_to_ui(f"Lỗi hệ thống: {e}")
-            await self.chat_to_ui("assistant", "Hệ thống gặp sự cố, vui lòng thử lại.")
+            error_message = str(e) or e.__class__.__name__
+            print(f"Error in text pipeline: {error_message}")
+            await self.log_to_ui(f"Lỗi hệ thống: {error_message}")
+            await self.chat_to_ui("assistant", f"XiaoZhi chưa phản hồi: {error_message}")
             await self.set_state("SPEAKING")
-            await self.voice.speak("Hệ thống gặp sự cố, vui lòng thử lại.", log_callback=self.log_to_ui)
+            if not self._last_response_from_xiaozhi:
+                await self.voice.speak("Hệ thống gặp sự cố, vui lòng thử lại.", log_callback=self.log_to_ui)
         finally:
             await self.set_state("IDLE")
             await self.broadcast_telemetry()
@@ -307,7 +309,11 @@ class AsyncCoreEngine:
             message = f"Sending question to XiaoZhi... remote_audio={audio_status}"
             print(message)
             await self.log_to_ui(message)
-            response = await self.xiaozhi_gateway.send_text_query(user_text, timeout=12.0)
+            response = await self.xiaozhi_gateway.send_text_query(
+                user_text,
+                timeout=15.0,
+                ready_timeout=20.0,
+            )
             self._last_response_from_xiaozhi = True
             return response, None
 
