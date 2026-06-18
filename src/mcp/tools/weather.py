@@ -1,5 +1,8 @@
 import asyncio
 import random
+from typing import Any
+
+from src.mcp.registry import McpTool, McpToolContext
 
 async def fetch_weather_api(location: str) -> dict:
     """Simulates an asynchronous HTTP Weather API call with real fallback."""
@@ -25,3 +28,27 @@ async def fetch_weather_api(location: str) -> dict:
         "humidity": data["humidity"],
         "provider": "OpenWeatherMap Simulator"
     }
+
+
+def get_tools(context: McpToolContext) -> list[McpTool]:
+    async def get_weather(params: dict[str, Any]) -> dict[str, Any]:
+        location = params.get("location", "Hà Nội")
+        return await fetch_weather_api(location)
+
+    return [
+        McpTool(
+            name="get_weather",
+            description="Truy vấn thời tiết hiện tại của một thành phố cụ thể.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "location": {
+                        "type": "string",
+                        "description": "Tên thành phố cần hỏi thời tiết (ví dụ: 'Hà Nội', 'Đà Nẵng').",
+                    }
+                },
+                "required": ["location"],
+            },
+            handler=get_weather,
+        )
+    ]

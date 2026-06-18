@@ -894,6 +894,17 @@ async def main_hud(page: ft.Page):
                         camera_view.update()
                         camera_placeholder.update()
 
+                elif ev_type == "camera_requested_state":
+                    enabled = bool(ev_val)
+                    camera_requested_state["enabled"] = enabled
+                    camera_switch.value = enabled
+                    apply_camera_layout(enabled)
+                    camera_switch.update()
+                    camera_panel_shell.update()
+                    camera_placeholder.update()
+                    camera_feed.update()
+                    fps_container.update()
+
                 elif ev_type == "camera_state":
                     enabled = bool(ev_val)
                     if enabled != camera_requested_state["enabled"]:

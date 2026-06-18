@@ -21,9 +21,11 @@ from src.xiaozhi_gateway import (
 class FakeVision:
     def __init__(self):
         self.is_enabled = True
+        self.enabled_history = []
 
     def set_enabled(self, enabled):
         self.is_enabled = enabled
+        self.enabled_history.append(enabled)
 
     async def detect_faces(self):
         return {"face_count": 1, "faces": [], "is_mocked_camera": True}, "frame"
@@ -68,6 +70,48 @@ class McpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["result"]["face_count"], 1)
         self.assertEqual(response["result"]["_b64_frame"], "frame")
 
+    async def test_json_rpc_can_toggle_camera(self):
+        response = await self.client._execute_tool_json_rpc(
+            "set_camera_enabled",
+            {"enabled": False},
+        )
+
+        self.assertEqual(response["jsonrpc"], "2.0")
+        self.assertFalse(response["result"]["enabled"])
+        self.assertEqual(self.client.vision.enabled_history, [False])
+
+    async def test_json_rpc_rejects_invalid_camera_toggle_payload(self):
+        response = await self.client._execute_tool_json_rpc(
+            "set_camera_enabled",
+            {"enabled": "off"},
+        )
+
+        self.assertEqual(response["error"]["code"], -32000)
+        self.assertIn("enabled", response["error"]["message"])
+
+    async def test_camera_tool_uses_core_camera_controller_when_available(self):
+        class FakeCameraController:
+            def __init__(self, vision):
+                self.vision = vision
+                self.enabled_history = []
+
+            async def set_camera_enabled(self, enabled):
+                self.enabled_history.append(enabled)
+                self.vision.is_enabled = enabled
+
+        vision = FakeVision()
+        controller = FakeCameraController(vision)
+        client = AsyncMcpClient(self.hw, vision, camera_controller=controller)
+
+        response = await client._execute_tool_json_rpc(
+            "set_camera_enabled",
+            {"enabled": False},
+        )
+
+        self.assertFalse(response["result"]["enabled"])
+        self.assertEqual(controller.enabled_history, [False])
+        self.assertEqual(vision.enabled_history, [])
+
     async def test_offline_chat_routes_to_hardware(self):
         answer, frame = await self.client.chat(
             prompt="Nhiệt độ và độ ẩm phòng hiện tại là bao nhiêu?",
@@ -91,6 +135,7 @@ class McpTests(unittest.IsolatedAsyncioTestCase):
         )
         tool_names = [tool["name"] for tool in tools_response["result"]["tools"]]
         self.assertIn("self.aiot.get_dht_data", tool_names)
+        self.assertIn("self.aiot.set_camera_enabled", tool_names)
 
         call_response = await adapter.handle_payload(
             {
@@ -106,6 +151,19 @@ class McpTests(unittest.IsolatedAsyncioTestCase):
         content = call_response["result"]["content"][0]["text"]
         self.assertIn("face_count", content)
         self.assertNotIn("_b64_frame", content)
+
+        camera_response = await adapter.handle_payload(
+            {
+                "jsonrpc": "2.0",
+                "method": "tools/call",
+                "params": {
+                    "name": "self.aiot.set_camera_enabled",
+                    "arguments": {"enabled": False},
+                },
+                "id": 3,
+            }
+        )
+        self.assertIn('"enabled": false', camera_response["result"]["content"][0]["text"])
 
     async def test_xiaozhi_gateway_wraps_mcp_response(self):
         adapter = XiaozhiMcpToolAdapter(self.client)
@@ -359,6 +417,16 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
         core.hw.connect.assert_awaited_once()
         core.hw.disconnect.assert_awaited_once()
         core.vision.close.assert_awaited_once()
+
+    async def test_camera_toggle_broadcasts_requested_state_for_ui(self):
+        core = AsyncCoreEngine()
+        core.vision.set_enabled = AsyncMock()
+
+        await core.set_camera_enabled(False)
+
+        event = await core.ui_queue.get()
+        self.assertEqual(event, {"type": "camera_requested_state", "value": False})
+        core.vision.set_enabled.assert_awaited_once_with(False)
 
     async def test_rejects_unknown_provider(self):
         core = AsyncCoreEngine()

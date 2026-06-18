@@ -2,70 +2,19 @@ import asyncio
 import json
 import litellm
 from typing import Callable, Optional
-from src.mcp.tools.weather import fetch_weather_api
+from src.mcp.tools.catalog import build_default_registry
 
 class AsyncMcpClient:
-    def __init__(self, hw_controller, vision_agent):
+    def __init__(self, hw_controller, vision_agent, camera_controller=None):
         self.hw = hw_controller
         self.vision = vision_agent
         self.request_id_counter = 0
-
-        # Define tools schema for LiteLLM (OpenAI Tool format)
-        self.tools_schema = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "get_dht_data",
-                    "description": "Đọc thông tin nhiệt độ và độ ẩm phòng hiện tại từ cảm biến DHT22 kết nối với STM32.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "detect_faces",
-                    "description": "Chụp một bức ảnh từ camera HD và đếm số lượng khuôn mặt/người có mặt.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "detect_colors",
-                    "description": "Chụp một bức ảnh từ camera HD và nhận diện màu sắc của vật thể ở trung tâm khung hình.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "get_weather",
-                    "description": "Truy vấn thời tiết hiện tại của một thành phố cụ thể.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "location": {
-                                "type": "string",
-                                "description": "Tên thành phố cần hỏi thời tiết (ví dụ: 'Hà Nội', 'Đà Nẵng')."
-                            }
-                        },
-                        "required": ["location"]
-                    }
-                }
-            }
-        ]
+        self.registry = build_default_registry(
+            hw_controller,
+            vision_agent,
+            camera_controller=camera_controller,
+        )
+        self.tools_schema = self.registry.tools_schema()
 
     def _next_id(self) -> int:
         self.request_id_counter += 1
@@ -88,36 +37,8 @@ class AsyncMcpClient:
         result = None
         error = None
         try:
-            if method == "get_dht_data":
-                result = await self.hw.get_dht_data()
-            elif method == "detect_faces":
-                was_enabled = self.vision.is_enabled
-                if not was_enabled:
-                    await self.vision.set_enabled(True)
-                    await asyncio.sleep(0.5)
-                result, b64_frame = await self.vision.detect_faces()
-                result = {
-                    "face_count": result["face_count"],
-                    "faces": result["faces"],
-                    "is_mocked_camera": result["is_mocked_camera"],
-                    "_b64_frame": b64_frame
-                }
-            elif method == "detect_colors":
-                was_enabled = self.vision.is_enabled
-                if not was_enabled:
-                    await self.vision.set_enabled(True)
-                    await asyncio.sleep(0.5)
-                result, b64_frame = await self.vision.detect_colors()
-                result = {
-                    "detected_color": result["detected_color"],
-                    "hsv_values": result["hsv_values"],
-                    "is_mocked_camera": result["is_mocked_camera"],
-                    "_b64_frame": b64_frame
-                }
-            elif method == "get_weather":
-                location = params.get("location", "Hà Nội")
-                result = await fetch_weather_api(location)
-            else:
+            result = await self.registry.execute(method, params)
+            if result is None:
                 error = {"code": -32601, "message": f"Method '{method}' not found"}
         except Exception as e:
             error = {"code": -32000, "message": f"Execution error: {str(e)}"}
@@ -151,7 +72,7 @@ class AsyncMcpClient:
                 "Bạn là trợ lý AIoT-Nexus thông minh điều khiển thiết bị phần cứng STM32 và camera OpenCV. "
                 "Hãy giao tiếp bằng tiếng Việt thân thiện, tự nhiên. "
                 "Bạn có quyền truy cập trực tiếp vào phần cứng thông qua các công cụ. "
-                "Khi người dùng yêu cầu đo nhiệt độ/độ ẩm, phát hiện mặt, nhận diện màu sắc hoặc hỏi thời tiết, "
+                "Khi người dùng yêu cầu đo nhiệt độ/độ ẩm, phát hiện mặt, nhận diện màu sắc, bật/tắt camera hoặc hỏi thời tiết, "
                 "bạn PHẢI gọi công cụ tương ứng để lấy dữ liệu thực tế thay vì tự đoán."
             )},
             {"role": "user", "content": prompt}
@@ -245,7 +166,19 @@ class AsyncMcpClient:
         tool_executed = None
         result_payload = {}
         
-        if "nhiệt độ" in p_lower or "độ ẩm" in p_lower or "dht" in p_lower or "cảm biến" in p_lower:
+        if "camera" in p_lower and any(word in p_lower for word in ["bật", "mở"]):
+            tool_executed = "set_camera_enabled"
+            rpc_res = await self._execute_tool_json_rpc(tool_executed, {"enabled": True})
+            result_payload = rpc_res.get("result", {})
+            ans = "Tôi đã bật camera cho bạn."
+
+        elif "camera" in p_lower and any(word in p_lower for word in ["tắt", "dừng", "đóng"]):
+            tool_executed = "set_camera_enabled"
+            rpc_res = await self._execute_tool_json_rpc(tool_executed, {"enabled": False})
+            result_payload = rpc_res.get("result", {})
+            ans = "Tôi đã tắt camera cho bạn."
+
+        elif "nhiệt độ" in p_lower or "độ ẩm" in p_lower or "dht" in p_lower or "cảm biến" in p_lower:
             tool_executed = "get_dht_data"
             rpc_res = await self._execute_tool_json_rpc(tool_executed, {})
             result_payload = rpc_res.get("result", {})
@@ -286,7 +219,7 @@ class AsyncMcpClient:
             ans = f"Thời tiết hôm nay tại {result_payload.get('location')} đang là {result_payload.get('temperature')} với trạng thái {result_payload.get('condition')}, độ ẩm khoảng {result_payload.get('humidity')}."
             
         else:
-            ans = "Chào bạn! Tôi là bộ não trung tâm AIoT-Nexus. Tôi có thể giúp bạn đọc cảm biến nhiệt độ phòng, kích hoạt camera nhận diện khuôn mặt, màu sắc hoặc tra cứu thông tin thời tiết. Hãy thử đặt các câu hỏi liên quan nhé!"
+            ans = "Chào bạn! Tôi là bộ não trung tâm AIoT-Nexus. Tôi có thể giúp bạn đọc cảm biến nhiệt độ phòng, bật/tắt camera, kích hoạt camera nhận diện khuôn mặt, màu sắc hoặc tra cứu thông tin thời tiết. Hãy thử đặt các câu hỏi liên quan nhé!"
 
         if tool_executed and last_b64_frame and tool_hook:
             await tool_hook(tool_executed, last_b64_frame, result_payload)

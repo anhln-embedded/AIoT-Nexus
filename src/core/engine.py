@@ -64,7 +64,11 @@ class AsyncCoreEngine:
         self.vision = AsyncVisionAgent(camera_index=CAMERA_INDEX)
         self.vision.state_callback = self.handle_camera_state_change
         self.voice = AsyncVoiceAgent()
-        self.mcp = AsyncMcpClient(hw_controller=self.hw, vision_agent=self.vision)
+        self.mcp = AsyncMcpClient(
+            hw_controller=self.hw,
+            vision_agent=self.vision,
+            camera_controller=self,
+        )
 
         self.state = "IDLE"
         self.is_running = False
@@ -410,6 +414,10 @@ class AsyncCoreEngine:
 
     async def set_camera_enabled(self, enabled: bool):
         """Toggles the camera enabled state dynamically."""
+        await self.ui_queue.put({
+            "type": "camera_requested_state",
+            "value": enabled
+        })
         await self.vision.set_enabled(enabled)
 
     async def update_camera_index(self, index: int):
