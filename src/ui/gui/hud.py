@@ -469,31 +469,23 @@ async def main_hud(page: ft.Page):
         "assistant_parts": [],
         "active_assistant_text": None,
         "active_assistant_message": "",
-        "last_user_message": "",
     }
-
-    def normalize_chat_text(message: str) -> str:
-        return " ".join(message.split())
 
     def append_log(message: str):
         # Surface only XiaoZhi conversation events in the chat panel.
         # Technical logs still go to the terminal via print statements.
-        if message.startswith("XiaoZhi STT: "):
-            stt_text = message.removeprefix("XiaoZhi STT: ").strip()
+        if message.startswith("[USER]: "):
+            stt_text = message.removeprefix("[USER]: ").strip()
             if stt_text:
                 xiaozhi_chat_state["last_stt"] = stt_text
                 xiaozhi_chat_state["assistant_parts"].clear()
                 xiaozhi_chat_state["active_assistant_text"] = None
                 xiaozhi_chat_state["active_assistant_message"] = ""
-                if normalize_chat_text(stt_text) != normalize_chat_text(xiaozhi_chat_state["last_user_message"]):
-                    append_chat_message("user", stt_text)
+                append_chat_message("user", stt_text, from_xiaozhi_stream=True)
             return
 
-        if message.startswith("XiaoZhi: "):
-            assistant_text = message.removeprefix("XiaoZhi: ").strip()
-            if assistant_text:
-                append_xiaozhi_assistant_part(assistant_text)
-            return
+        # Assistant text uses a dedicated acknowledged UI event so the
+        # corresponding audio cannot start before the bubble is rendered.
 
     def append_xiaozhi_assistant_part(message: str):
         xiaozhi_chat_state["assistant_parts"].append(message)
@@ -520,8 +512,6 @@ async def main_hud(page: ft.Page):
             return
 
         is_user = role == "user"
-        if is_user:
-            xiaozhi_chat_state["last_user_message"] = message
         bubble_color = "#14313A" if is_user else "#18212B"
         border_color = "#45A29E" if is_user else "#2E3B48"
         text_color = "#EAFBFA" if is_user else "#D7E1E5"
@@ -875,6 +865,12 @@ async def main_hud(page: ft.Page):
 
                 elif ev_type == "chat_message":
                     append_chat_message(str(event.get("role", "assistant")), str(ev_val))
+
+                elif ev_type == "xiaozhi_assistant_part":
+                    append_xiaozhi_assistant_part(str(ev_val))
+                    rendered = event.get("rendered")
+                    if rendered is not None and not rendered.done():
+                        rendered.set_result(True)
 
                 elif ev_type == "telemetry":
                     temp_text.value = f"{event.get('temp')} °C"

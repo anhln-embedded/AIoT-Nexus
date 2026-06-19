@@ -303,6 +303,30 @@ class AsyncVoiceAgent:
                 await log_callback(f"Lỗi ghi âm: {str(e)}")
             return None
 
+    @staticmethod
+    def _convert_microphone_chunk(
+        pcm_bytes: bytes,
+        sample_width: int,
+        input_rate: int,
+        input_channels: int,
+        output_rate: int,
+        rate_state=None,
+    ):
+        if input_channels == 2:
+            pcm_bytes = audioop.tomono(pcm_bytes, sample_width, 0.5, 0.5)
+        elif input_channels != 1:
+            raise ValueError("Only mono or stereo microphone input is supported")
+        if input_rate != output_rate:
+            pcm_bytes, rate_state = audioop.ratecv(
+                pcm_bytes,
+                sample_width,
+                1,
+                input_rate,
+                output_rate,
+                rate_state,
+            )
+        return pcm_bytes, rate_state
+
     async def stream_microphone_pcm_frames(
         self,
         sample_rate: int,
@@ -313,6 +337,7 @@ class AsyncVoiceAgent:
         listen_timeout: float = 8.0,
         phrase_time_limit: float = 10.0,
         silence_duration: float = 1.0,
+        stop_event: asyncio.Event | None = None,
     ):
         """Streams microphone PCM frames directly for XiaoZhi, without local STT."""
         if sample_width != 2:
@@ -332,6 +357,7 @@ class AsyncVoiceAgent:
             )
 
         frame_samples = max(1, int(sample_rate * frame_duration_ms / 1000))
+        frame_bytes = frame_samples * sample_width
         audio = pyaudio.PyAudio()
         stream = None
         loop = asyncio.get_running_loop()
@@ -340,53 +366,111 @@ class AsyncVoiceAgent:
         silence_started_at = None
         threshold = max(300, int(self.recognizer.energy_threshold))
         noise_samples = []
+        pending_pcm = b""
+        rate_state = None
 
         try:
-            stream = audio.open(
-                format=pyaudio.paInt16,
-                channels=channels,
-                rate=sample_rate,
-                input=True,
-                input_device_index=self._get_effective_microphone_index(),
-                frames_per_buffer=frame_samples,
-            )
+            device_index = self._get_effective_microphone_index()
+            if device_index is None:
+                device_info = audio.get_default_input_device_info()
+            else:
+                device_info = audio.get_device_info_by_index(device_index)
+            native_rate = max(1, int(float(device_info.get("defaultSampleRate", sample_rate))))
+            native_channels = max(1, min(2, int(device_info.get("maxInputChannels", 1))))
+            candidates = []
+            for candidate in (
+                (native_rate, native_channels),
+                (native_rate, 1),
+                (sample_rate, channels),
+            ):
+                if candidate not in candidates:
+                    candidates.append(candidate)
+
+            open_errors = []
+            input_rate = sample_rate
+            input_channels = channels
+            for input_rate, input_channels in candidates:
+                input_frame_samples = max(
+                    1, int(input_rate * frame_duration_ms / 1000)
+                )
+                try:
+                    stream = audio.open(
+                        format=pyaudio.paInt16,
+                        channels=input_channels,
+                        rate=input_rate,
+                        input=True,
+                        input_device_index=device_index,
+                        frames_per_buffer=input_frame_samples,
+                    )
+                    break
+                except Exception as exc:
+                    open_errors.append(
+                        f"{input_rate}Hz/{input_channels}ch: {exc}"
+                    )
+            if stream is None:
+                raise RuntimeError("; ".join(open_errors))
+
             if log_callback:
-                await log_callback("Streaming microphone audio to XiaoZhi...")
+                await log_callback(
+                    "Streaming microphone audio to XiaoZhi: "
+                    f"device={input_rate}Hz/{input_channels}ch -> "
+                    f"protocol={sample_rate}Hz/{channels}ch, frame={frame_duration_ms}ms"
+                )
 
             while True:
+                if stop_event is not None and stop_event.is_set():
+                    return
                 now = loop.time()
                 if speech_started_at is None and now - started_at >= listen_timeout:
                     return
                 if speech_started_at is not None and now - speech_started_at >= phrase_time_limit:
                     return
 
-                chunk = await asyncio.to_thread(
+                raw_chunk = await asyncio.to_thread(
                     stream.read,
-                    frame_samples,
+                    input_frame_samples,
                     exception_on_overflow=False,
                 )
-                rms = audioop.rms(chunk, sample_width) if chunk else 0
+                raw_chunk, rate_state = self._convert_microphone_chunk(
+                    raw_chunk,
+                    sample_width,
+                    input_rate,
+                    input_channels,
+                    sample_rate,
+                    rate_state,
+                )
+                pending_pcm += raw_chunk
 
-                if speech_started_at is None:
-                    if now - started_at < 0.4:
-                        noise_samples.append(rms)
-                        if noise_samples:
-                            threshold = max(threshold, int(max(noise_samples) * 2.5))
-                    if rms >= threshold:
-                        speech_started_at = now
+                while len(pending_pcm) >= frame_bytes:
+                    chunk = pending_pcm[:frame_bytes]
+                    pending_pcm = pending_pcm[frame_bytes:]
+                    rms = audioop.rms(chunk, sample_width) if chunk else 0
 
-                yield chunk
+                    if speech_started_at is None:
+                        if now - started_at < 0.4:
+                            noise_samples.append(rms)
+                            if noise_samples:
+                                threshold = max(
+                                    threshold, int(max(noise_samples) * 2.5)
+                                )
+                        if rms >= threshold:
+                            speech_started_at = now
 
-                if speech_started_at is None:
-                    continue
+                    yield chunk
 
-                if rms < threshold:
-                    if silence_started_at is None:
-                        silence_started_at = now
-                    elif now - silence_started_at >= silence_duration:
+                    if stop_event is not None and stop_event.is_set():
                         return
-                else:
-                    silence_started_at = None
+                    if speech_started_at is None:
+                        continue
+
+                    if stop_event is None:
+                        if rms < threshold:
+                            if silence_started_at is None:
+                                silence_started_at = now
+                            elif now - silence_started_at >= silence_duration:
+                                return
+                        else:
+                            silence_started_at = None
         finally:
             if stream is not None:
                 stream.stop_stream()

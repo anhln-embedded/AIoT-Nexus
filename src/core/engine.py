@@ -32,6 +32,8 @@ from src.core.config import (
     USE_REAL_UART,
     XIAOZHI_CLIENT_ID,
     XIAOZHI_DEVICE_ID,
+    XIAOZHI_AUDIO_FRAME_DURATION,
+    XIAOZHI_AUDIO_SAMPLE_RATE,
     XIAOZHI_GATEWAY_ENABLED,
     XIAOZHI_MQTT_PASSWORD,
     XIAOZHI_MQTT_PUBLISH_TOPIC,
@@ -187,6 +189,8 @@ class AsyncCoreEngine:
             protocol_version=XIAOZHI_PROTOCOL_VERSION,
             device_id=XIAOZHI_DEVICE_ID,
             client_id=XIAOZHI_CLIENT_ID,
+            audio_sample_rate=XIAOZHI_AUDIO_SAMPLE_RATE,
+            audio_frame_duration=XIAOZHI_AUDIO_FRAME_DURATION,
             mqtt_username=XIAOZHI_MQTT_USERNAME,
             mqtt_password=XIAOZHI_MQTT_PASSWORD,
             mqtt_publish_topic=XIAOZHI_MQTT_PUBLISH_TOPIC,
@@ -198,6 +202,7 @@ class AsyncCoreEngine:
         else:
             gateway = XiaozhiWebSocketGateway(config, adapter, log_callback=self.log_to_ui)
         gateway.speech_state_callback = self._handle_xiaozhi_speech_state
+        gateway.assistant_text_callback = self._handle_xiaozhi_assistant_text
         return gateway
 
     async def handle_tool_execution_hook(self, name: str, b64_frame: str, result: dict):
@@ -288,25 +293,35 @@ class AsyncCoreEngine:
             if not user_text.strip():
                 break
 
-            await self.chat_to_ui("user", user_text)
+            if not getattr(self.xiaozhi_gateway, "last_stt_text", "").strip():
+                await self.chat_to_ui("user", user_text)
             await self.log_to_ui(f"Báº¡n nÃ³i: \"{user_text}\"")
             await self.set_state("SPEAKING")
             await self.chat_to_ui("assistant", ai_response)
             await self._wait_for_xiaozhi_speech_finished()
+
+            if self._is_xiaozhi_farewell(user_text, ai_response):
+                await self.log_to_ui(
+                    "[XIAOZHI EVENT] Farewell detected; conversation closed."
+                )
+                break
 
             turn += 1
             if not self.is_running:
                 break
 
     async def _run_xiaozhi_voice_pipeline(self, response_timeout: float = 30.0) -> tuple[str, str]:
-        await self.log_to_ui("Streaming microphone audio to XiaoZhi...")
-        print("Streaming microphone audio to XiaoZhi...")
+        await self.log_to_ui("[MIC STREAM] Listening and streaming audio to XiaoZhi...")
+        print("[MIC STREAM] Listening and streaming audio to XiaoZhi...")
 
         async def audio_frames():
             async for frame in self.voice.stream_microphone_pcm_frames(
                 sample_rate=self.xiaozhi_gateway.config.audio_sample_rate,
                 frame_duration_ms=self.xiaozhi_gateway.config.audio_frame_duration,
                 channels=self.xiaozhi_gateway.config.audio_channels,
+                stop_event=getattr(
+                    self.xiaozhi_gateway, "listening_finished_event", None
+                ),
                 log_callback=self.log_to_ui,
             ):
                 yield frame
@@ -322,11 +337,40 @@ class AsyncCoreEngine:
         self._last_response_from_xiaozhi = True
         if not ai_response:
             return "", ""
-        return "Âm thanh từ micro", ai_response
+        user_text = getattr(self.xiaozhi_gateway, "last_stt_text", "").strip()
+        return user_text or "Âm thanh từ micro", ai_response
 
     async def _handle_xiaozhi_speech_state(self, state: str):
-        if state == "SPEAKING":
-            await self.set_state("SPEAKING")
+        if state in {"SPEAKING", "IDLE"}:
+            await self.set_state(state)
+
+    async def _handle_xiaozhi_assistant_text(self, text: str):
+        rendered = asyncio.get_running_loop().create_future()
+        await self.ui_queue.put(
+            {
+                "type": "xiaozhi_assistant_part",
+                "value": text,
+                "rendered": rendered,
+            }
+        )
+        try:
+            await asyncio.wait_for(rendered, timeout=1.0)
+        except asyncio.TimeoutError:
+            pass
+
+    @staticmethod
+    def _is_xiaozhi_farewell(user_text: str, assistant_text: str) -> bool:
+        conversation = f"{user_text} {assistant_text}".casefold()
+        return any(
+            marker in conversation
+            for marker in (
+                "tạm biệt",
+                "hẹn gặp lại",
+                "goodbye",
+                "bye",
+                "see you",
+            )
+        )
 
     async def _wait_for_xiaozhi_speech_finished(self):
         if self.xiaozhi_gateway and hasattr(self.xiaozhi_gateway, "wait_for_speech_finished"):

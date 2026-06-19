@@ -28,7 +28,7 @@ class XiaozhiGatewayConfig:
     mqtt_subscribe_topic: str = ""
     audio_sample_rate: int = 16000
     audio_channels: int = 1
-    audio_frame_duration: int = 60
+    audio_frame_duration: int = 20
 
     def resolved_client_id(self) -> str:
         return self.client_id or self.mqtt_client_id or str(uuid.uuid4())
@@ -50,9 +50,12 @@ class XiaozhiGatewayBase:
         self._mcp_initialized = asyncio.Event()
         self._speech_finished = asyncio.Event()
         self._speech_finished.set()
+        self.listening_finished_event = asyncio.Event()
+        self.last_stt_text = ""
         self._outgoing: asyncio.Queue[dict[str, Any] | bytes | None] = asyncio.Queue()
         self._text_events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self.speech_state_callback: LogCallback = None
+        self.assistant_text_callback: LogCallback = None
         self._logged_binary_audio = False
         self.audio_player = XiaozhiAudioPlayer(
             sample_rate=config.audio_sample_rate,
@@ -212,6 +215,8 @@ class XiaozhiGatewayBase:
             await self._log("XiaoZhi MCP initialize was not observed before audio query; continuing")
         self._drain_text_events()
         self._speech_finished.set()
+        self.listening_finished_event.clear()
+        self.last_stt_text = ""
 
         encoder = self._create_opus_encoder(sample_rate, sample_width)
         audio_packets_sent = 0
@@ -224,31 +229,34 @@ class XiaozhiGatewayBase:
                 "mode": listen_mode,
             }
         )
-        async for pcm_frame in pcm_frames:
-            if not pcm_frame:
-                continue
-            packets = self._encode_pcm_chunk_to_opus(encoder, pcm_frame, sample_rate, sample_width)
-            if not packets:
-                continue
-            for packet in packets:
-                wrapped_packet = self._wrap_binary_audio_packet(packet)
-                audio_packets_sent += 1
-                audio_bytes_sent += len(wrapped_packet)
-                await self._outgoing.put(wrapped_packet)
-
-        for packet in self._flush_opus_encoder(encoder):
-            wrapped_packet = self._wrap_binary_audio_packet(packet)
-            audio_packets_sent += 1
-            audio_bytes_sent += len(wrapped_packet)
-            await self._outgoing.put(wrapped_packet)
-        await self._outgoing.put(
-            {
-                "session_id": self.session_id,
-                "type": "listen",
-                "state": "stop",
-            }
-        )
-        await self._log_audio_send_summary(audio_packets_sent, audio_bytes_sent)
+        try:
+            async for pcm_frame in pcm_frames:
+                if not pcm_frame:
+                    continue
+                packets = self._encode_pcm_chunk_to_opus(
+                    encoder, pcm_frame, sample_rate, sample_width
+                )
+                for packet in packets:
+                    wrapped_packet = self._wrap_binary_audio_packet(packet)
+                    audio_packets_sent += 1
+                    audio_bytes_sent += len(wrapped_packet)
+                    await self._outgoing.put(wrapped_packet)
+        finally:
+            try:
+                for packet in self._flush_opus_encoder(encoder):
+                    wrapped_packet = self._wrap_binary_audio_packet(packet)
+                    audio_packets_sent += 1
+                    audio_bytes_sent += len(wrapped_packet)
+                    await self._outgoing.put(wrapped_packet)
+            finally:
+                await self._outgoing.put(
+                    {
+                        "session_id": self.session_id,
+                        "type": "listen",
+                        "state": "stop",
+                    }
+                )
+                await self._log_audio_send_summary(audio_packets_sent, audio_bytes_sent)
 
         return await self._collect_text_response(timeout, sentence_idle_timeout)
 
@@ -275,11 +283,11 @@ class XiaozhiGatewayBase:
 
     async def _log_audio_send_summary(self, packet_count: int, byte_count: int):
         await self._log(
-            "XiaoZhi microphone upload: "
+            "[MIC UPLOAD] Audio sent to XiaoZhi: "
             f"packets={packet_count}, bytes={byte_count}, protocol_version={self.config.protocol_version}"
         )
         if packet_count == 0:
-            await self._log("XiaoZhi microphone upload had no Opus packets")
+            await self._log("[MIC UPLOAD] No Opus packets were sent")
 
     def _create_opus_encoder(self, sample_rate: int, sample_width: int):
         import av
@@ -409,8 +417,10 @@ class XiaozhiGatewayBase:
         message_type = message.get("type")
         if message_type == "stt":
             text = message.get("text", "")
+            self.last_stt_text = text
+            self.listening_finished_event.set()
             await self._text_events.put({"type": "stt", "text": text})
-            await self._log(f"XiaoZhi STT: {text}")
+            await self._log(f"[USER]: {text}")
         elif message_type == "llm":
             text = message.get("text", "")
             if text:
@@ -418,6 +428,7 @@ class XiaozhiGatewayBase:
         elif message_type == "tts":
             state = message.get("state")
             if state == "start":
+                self.listening_finished_event.set()
                 self._speech_finished.clear()
                 await self._notify_speech_state("SPEAKING")
                 await self._text_events.put({"type": "tts_start"})
@@ -426,10 +437,14 @@ class XiaozhiGatewayBase:
                 self._speech_finished.clear()
                 await self._notify_speech_state("SPEAKING")
                 await self._text_events.put({"type": "sentence", "text": text, "source": "tts"})
-                await self._log(f"XiaoZhi: {text}")
+                if text and self.assistant_text_callback:
+                    await self.assistant_text_callback(text)
+                await self._log(f"[XIAOZHI TRA LOI]: {text}")
             elif state == "stop":
                 self._speech_finished.set()
+                await self._notify_speech_state("IDLE")
                 await self._text_events.put({"type": "tts_stop"})
+                await self._log("[XIAOZHI EVENT] TTS stopped")
         elif message_type == "alert":
             status = message.get("status", "Alert")
             text = message.get("message", "")

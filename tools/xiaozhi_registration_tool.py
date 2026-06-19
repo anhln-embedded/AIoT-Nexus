@@ -83,6 +83,8 @@ def build_env_block(device_id: str, client_id: str, payload: dict | None = None)
             f"AIOT_XIAOZHI_DEVICE_ID={device_id}",
             f"AIOT_XIAOZHI_CLIENT_ID={client_id}",
             "AIOT_XIAOZHI_PROTOCOL_VERSION=1",
+            "AIOT_XIAOZHI_AUDIO_SAMPLE_RATE=16000",
+            "AIOT_XIAOZHI_AUDIO_FRAME_DURATION=20",
         ]
     )
 
