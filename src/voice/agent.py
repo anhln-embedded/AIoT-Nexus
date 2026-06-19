@@ -41,8 +41,7 @@ except ImportError:
 
 try:
     import pygame
-    pygame.mixer.init()
-except Exception:
+except ImportError:
     pygame = None
 
 try:
@@ -59,6 +58,7 @@ class AsyncVoiceAgent:
         self.recognizer.dynamic_energy_threshold = True
         self._microphone = None
         self.microphone_index = None
+        self.speaker_index = None
         self.is_calibrated = False
 
     @property
@@ -223,6 +223,91 @@ class AsyncVoiceAgent:
             if device_index == index:
                 return f"Mic {device_index}: {name}"
         return f"Mic {index}"
+
+    @classmethod
+    def _output_devices_from_audio(cls, audio):
+        devices = []
+        for index in range(audio.get_device_count()):
+            info = dict(audio.get_device_info_by_index(index))
+            if int(info.get("maxOutputChannels", 0)) <= 0:
+                continue
+            info["index"] = int(info.get("index", index))
+            info["name"] = cls._clean_microphone_name(
+                info.get("name", f"Speaker {index}")
+            )
+            info["hostApiName"] = cls._get_host_api_name(audio, info.get("hostApi"))
+            if info["name"]:
+                devices.append(info)
+        return devices
+
+    @classmethod
+    def list_speakers(cls):
+        try:
+            import pyaudio
+
+            audio = pyaudio.PyAudio()
+            try:
+                devices = cls._output_devices_from_audio(audio)
+                devices = cls._prefer_host_api(devices)
+                devices = cls._dedupe_devices(devices)
+                return [(device["index"], device["name"]) for device in devices]
+            finally:
+                audio.terminate()
+        except Exception as exc:
+            print(f"Failed to list speakers: {exc}")
+            return []
+
+    @classmethod
+    def get_default_speaker_info(cls):
+        try:
+            import pyaudio
+
+            audio = pyaudio.PyAudio()
+            try:
+                info = audio.get_default_output_device_info()
+                if int(info.get("maxOutputChannels", 0)) > 0:
+                    return int(info["index"]), cls._clean_microphone_name(info.get("name", ""))
+            finally:
+                audio.terminate()
+        except Exception as exc:
+            print(f"Failed to resolve default speaker: {exc}")
+        devices = cls.list_speakers()
+        return devices[0] if devices else None
+
+    @classmethod
+    def get_speaker_label(cls, index=None):
+        if index is None:
+            default_info = cls.get_default_speaker_info()
+            if default_info is not None:
+                device_index, name = default_info
+                return f"Loa {device_index}: {name}"
+            return "loa mặc định hệ thống"
+
+        for device_index, name in cls.list_speakers():
+            if device_index == index:
+                return f"Loa {device_index}: {name}"
+        return f"Loa {index}"
+
+    def set_speaker_index(self, index):
+        self.speaker_index = index
+        if pygame is not None and pygame.mixer.get_init():
+            pygame.mixer.music.stop()
+            pygame.mixer.quit()
+
+    def _initialize_pygame_mixer(self):
+        if pygame.mixer.get_init():
+            return
+        if self.speaker_index is None:
+            pygame.mixer.init()
+            return
+
+        device_name = next(
+            (name for index, name in self.list_speakers() if index == self.speaker_index),
+            None,
+        )
+        if device_name is None:
+            raise RuntimeError(f"Không tìm thấy loa {self.speaker_index}")
+        pygame.mixer.init(devicename=device_name)
 
     async def calibrate(self):
         """Calibrates the microphone for ambient noise in a non-blocking executor."""
@@ -531,7 +616,7 @@ class AsyncVoiceAgent:
         def _play():
             try:
                 if not pygame.mixer.get_init():
-                    pygame.mixer.init()
+                    self._initialize_pygame_mixer()
                 pygame.mixer.music.load(temp_file_path)
                 pygame.mixer.music.play()
                 return True

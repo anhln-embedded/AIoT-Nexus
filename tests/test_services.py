@@ -1,7 +1,7 @@
 import asyncio
 import time
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import numpy as np
 
@@ -16,6 +16,7 @@ from src.xiaozhi_gateway import (
     XiaozhiMcpToolAdapter,
     XiaozhiWebSocketGateway,
 )
+from src.xiaozhi_gateway.audio_player import XiaozhiAudioPlayer
 
 
 class FakeVision:
@@ -475,6 +476,58 @@ class VoiceTests(unittest.TestCase):
         self.assertEqual(
             [(device["index"], device["name"]) for device in devices],
             [(3, "Microphone Array (Intel)")],
+        )
+
+    def test_speaker_listing_keeps_only_preferred_output_devices(self):
+        class FakeAudio:
+            host_apis = {
+                0: {"name": "MME"},
+                1: {"name": "Windows WASAPI"},
+            }
+            devices = [
+                {"index": 0, "name": "Microphone", "hostApi": 1, "maxOutputChannels": 0},
+                {"index": 1, "name": "Speakers (Realtek)", "hostApi": 0, "maxOutputChannels": 2},
+                {"index": 2, "name": "Speakers (Realtek)", "hostApi": 1, "maxOutputChannels": 2},
+                {"index": 3, "name": "Headphones", "hostApi": 1, "maxOutputChannels": 2},
+            ]
+
+            def get_device_count(self):
+                return len(self.devices)
+
+            def get_device_info_by_index(self, index):
+                return self.devices[index]
+
+            def get_host_api_info_by_index(self, index):
+                return self.host_apis[index]
+
+        devices = AsyncVoiceAgent._output_devices_from_audio(FakeAudio())
+        devices = AsyncVoiceAgent._prefer_host_api(devices)
+        devices = AsyncVoiceAgent._dedupe_devices(devices)
+
+        self.assertEqual(
+            [(device["index"], device["name"]) for device in devices],
+            [(2, "Speakers (Realtek)"), (3, "Headphones")],
+        )
+
+    def test_xiaozhi_player_opens_selected_output_device(self):
+        player = object.__new__(XiaozhiAudioPlayer)
+        player._stream = None
+        player._audio = Mock()
+        player.pyaudio = Mock(paInt16=8)
+        player.output_channels = 1
+        player.output_sample_rate = 48000
+        player.output_device_index = 6
+        player._audio.open.return_value = Mock()
+
+        player._ensure_stream()
+
+        player._audio.open.assert_called_once_with(
+            format=8,
+            channels=1,
+            rate=48000,
+            output=True,
+            output_device_index=6,
+            frames_per_buffer=960,
         )
 
     def test_default_microphone_resolves_to_available_index(self):

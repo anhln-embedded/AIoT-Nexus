@@ -203,6 +203,7 @@ class AsyncCoreEngine:
             gateway = XiaozhiWebSocketGateway(config, adapter, log_callback=self.log_to_ui)
         gateway.speech_state_callback = self._handle_xiaozhi_speech_state
         gateway.assistant_text_callback = self._handle_xiaozhi_assistant_text
+        gateway.audio_player.set_output_device(self.voice.speaker_index)
         return gateway
 
     async def handle_tool_execution_hook(self, name: str, b64_frame: str, result: dict):
@@ -482,4 +483,15 @@ class AsyncCoreEngine:
         """Updates the microphone input device used for STT."""
         self.voice.set_microphone_index(index)
         label = self.voice.get_microphone_label(index)
+        await self.log_to_ui(f"Hệ thống: Thiết lập sử dụng {label}.")
+
+    async def get_available_speakers(self):
+        return await asyncio.to_thread(self.voice.list_speakers)
+
+    async def update_speaker_index(self, index: int | None):
+        """Updates the output device used for local and XiaoZhi speech."""
+        self.voice.set_speaker_index(index)
+        if self.xiaozhi_gateway is not None:
+            self.xiaozhi_gateway.audio_player.set_output_device(index)
+        label = self.voice.get_speaker_label(index)
         await self.log_to_ui(f"Hệ thống: Thiết lập sử dụng {label}.")

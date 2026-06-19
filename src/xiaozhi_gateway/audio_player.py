@@ -18,6 +18,7 @@ class XiaozhiAudioPlayer:
         self._audio = None
         self._stream = None
         self._backend = None
+        self.output_device_index = None
 
         try:
             import av
@@ -105,8 +106,16 @@ class XiaozhiAudioPlayer:
             channels=self.output_channels,
             rate=self.output_sample_rate,
             output=True,
+            output_device_index=self.output_device_index,
             frames_per_buffer=960,
         )
+
+    def set_output_device(self, index: Optional[int]):
+        self.output_device_index = index
+        if self._stream:
+            self._stream.stop_stream()
+            self._stream.close()
+            self._stream = None
 
     def close(self):
         if self._stream:

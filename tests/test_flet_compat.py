@@ -6,7 +6,7 @@ from pathlib import Path
 
 import flet as ft
 
-from src.ui.gui.hud import configure_window
+from src.ui.gui.hud import apply_control_palette, configure_window
 
 
 class FakeWindow:
@@ -56,6 +56,30 @@ class FletCompatibilityTests(unittest.TestCase):
 
         self.assertEqual(page.window.width, 1280)
         self.assertEqual(page.window.height, 720)
+
+    def test_control_palette_switches_to_light_and_back(self):
+        child = ft.Text("Nội dung", color="#EAFBFA")
+        hover_surface = ft.Container(bgcolor="#18313A")
+        control = ft.Container(
+            bgcolor="#12161F",
+            border=ft.Border.all(1, "#45A29E"),
+            shadow=ft.BoxShadow(color=ft.Colors.with_opacity(0.22, "#66FCF1")),
+            content=ft.Column([child, hover_surface]),
+        )
+
+        apply_control_palette(control, light=True)
+        self.assertEqual(control.bgcolor, "#EEF3F5")
+        self.assertEqual(control.border.top.color, "#168A84")
+        self.assertEqual(control.shadow.color, "#007C76,0.22")
+        self.assertEqual(child.color, "#18383D")
+        self.assertEqual(hover_surface.bgcolor, "#DCEDEC")
+
+        apply_control_palette(control, light=False)
+        self.assertEqual(control.bgcolor, "#12161F")
+        self.assertEqual(control.border.top.color, "#45A29E")
+        self.assertEqual(control.shadow.color, "#66FCF1,0.22")
+        self.assertEqual(child.color, "#EAFBFA")
+        self.assertEqual(hover_surface.bgcolor, "#18313A")
 
     def test_hud_uses_valid_flet_constructor_arguments(self):
         hud_path = Path(__file__).parents[1] / "src" / "ui" / "gui" / "hud.py"
