@@ -185,8 +185,8 @@ def configure_window(
     if is_pi:
         page.padding = 0
         page.window.full_screen = True
-        page.window.frameless = True
-        # Fullscreen and maximized are competing window-manager states on Linux.
+        # Let the Linux window manager own the window so it can honor fullscreen.
+        page.window.frameless = False
         page.window.maximized = False
         page.window.resizable = False
         page.window.maximizable = False
@@ -229,6 +229,8 @@ async def main_hud(page: ft.Page):
     )
     configure_window(page)
     log_window_diagnostics(page, "fullscreen_requested")
+    page.update()
+    log_window_diagnostics(page, "fullscreen_update_sent")
     theme_state = {"light": False}
 
     def ui_color(dark_color: str) -> str:
@@ -1337,11 +1339,29 @@ async def main_hud(page: ft.Page):
     page.update()
     log_window_diagnostics(page, "first_page_update")
 
-    async def log_delayed_window_state():
-        await asyncio.sleep(2)
-        log_window_diagnostics(page, "two_seconds_after_update")
+    async def enforce_pi_fullscreen():
+        if not IS_PI:
+            return
 
-    asyncio.create_task(log_delayed_window_state())
+        try:
+            await asyncio.wait_for(page.window.wait_until_ready_to_show(), timeout=5)
+            log_window_diagnostics(page, "window_ready")
+        except Exception as error:
+            print(f"[AIOT WINDOW] stage='window_ready_error' error={error!r}", flush=True)
+
+        for attempt in range(1, 4):
+            await asyncio.sleep(1)
+            log_window_diagnostics(page, f"fullscreen_check_{attempt}")
+            if page.window.full_screen:
+                return
+            configure_window(page, is_pi=True)
+            page.update()
+            log_window_diagnostics(page, f"fullscreen_retry_{attempt}")
+
+        await asyncio.sleep(1)
+        log_window_diagnostics(page, "fullscreen_final_state")
+
+    asyncio.create_task(enforce_pi_fullscreen())
 
     # Apply default LLM settings at startup
     prov = DEFAULT_PROVIDER
