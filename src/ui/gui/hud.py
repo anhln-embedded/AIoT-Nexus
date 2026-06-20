@@ -13,35 +13,6 @@ from src.core.config import (
 
 CAMERA_PREVIEW_FPS = float(os.getenv("AIOT_CAMERA_PREVIEW_FPS", "24"))
 
-
-def log_window_diagnostics(page: ft.Page, stage: str, event=None) -> None:
-    """Print window state in a journalctl-friendly format."""
-    window = page.window
-    event_type = getattr(event, "type", None)
-    if hasattr(event_type, "value"):
-        event_type = event_type.value
-    values = {
-        "stage": stage,
-        "event": event_type,
-        "event_data": getattr(event, "data", None),
-        "config_is_pi": IS_PI,
-        "env_is_pi": os.getenv("AIOT_IS_PI"),
-        "flet_desktop_flavor": os.getenv("FLET_DESKTOP_FLAVOR"),
-        "display": os.getenv("DISPLAY"),
-        "wayland_display": os.getenv("WAYLAND_DISPLAY"),
-        "xdg_session_type": os.getenv("XDG_SESSION_TYPE"),
-        "page_platform": getattr(page, "platform", None),
-        "page_width": getattr(page, "width", None),
-        "page_height": getattr(page, "height", None),
-        "window_width": getattr(window, "width", None),
-        "window_height": getattr(window, "height", None),
-        "full_screen": getattr(window, "full_screen", None),
-        "maximized": getattr(window, "maximized", None),
-        "frameless": getattr(window, "frameless", None),
-    }
-    details = " ".join(f"{key}={value!r}" for key, value in values.items())
-    print(f"[AIOT WINDOW] {details}", flush=True)
-
 DARK_TO_LIGHT_COLORS = {
     "#0B0C10": "#E2EBED",
     "#1F2833": "#F7FAFA",
@@ -203,12 +174,6 @@ def configure_window(
     page.window.maximizable = False
 
 async def main_hud(page: ft.Page):
-    def on_window_event(event):
-        log_window_diagnostics(page, "window_event", event)
-
-    page.window.on_event = on_window_event
-    log_window_diagnostics(page, "startup")
-
     # Setup Page Metadata
     page.title = "AIoT-Nexus"
     page.theme_mode = ft.ThemeMode.DARK
@@ -227,10 +192,11 @@ async def main_hud(page: ft.Page):
         card_bgcolor="#1F2833",
         divider_color="#2E3B48",
     )
-    configure_window(page)
-    log_window_diagnostics(page, "fullscreen_requested")
-    page.update()
-    log_window_diagnostics(page, "fullscreen_update_sent")
+    if IS_PI:
+        page.padding = 0
+    else:
+        configure_window(page)
+        page.update()
     theme_state = {"light": False}
 
     def ui_color(dark_color: str) -> str:
@@ -1337,31 +1303,20 @@ async def main_hud(page: ft.Page):
 
     page.add(main_hud_layout)
     page.update()
-    log_window_diagnostics(page, "first_page_update")
 
-    async def enforce_pi_fullscreen():
+    async def apply_pi_fullscreen_when_ready():
         if not IS_PI:
             return
 
         try:
             await asyncio.wait_for(page.window.wait_until_ready_to_show(), timeout=5)
-            log_window_diagnostics(page, "window_ready")
-        except Exception as error:
-            print(f"[AIOT WINDOW] stage='window_ready_error' error={error!r}", flush=True)
+        except Exception:
+            pass
 
-        for attempt in range(1, 4):
-            await asyncio.sleep(1)
-            log_window_diagnostics(page, f"fullscreen_check_{attempt}")
-            if page.window.full_screen:
-                return
-            configure_window(page, is_pi=True)
-            page.update()
-            log_window_diagnostics(page, f"fullscreen_retry_{attempt}")
+        configure_window(page, is_pi=True)
+        page.update()
 
-        await asyncio.sleep(1)
-        log_window_diagnostics(page, "fullscreen_final_state")
-
-    asyncio.create_task(enforce_pi_fullscreen())
+    asyncio.create_task(apply_pi_fullscreen_when_ready())
 
     # Apply default LLM settings at startup
     prov = DEFAULT_PROVIDER
