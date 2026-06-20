@@ -37,6 +37,7 @@ class FletCompatibilityTests(unittest.TestCase):
         self.assertEqual(page.padding, 0)
         self.assertTrue(page.window.full_screen)
         self.assertTrue(page.window.frameless)
+        self.assertFalse(page.window.maximized)
         self.assertFalse(page.window.resizable)
 
     def test_windows_window_keeps_development_dimensions(self):

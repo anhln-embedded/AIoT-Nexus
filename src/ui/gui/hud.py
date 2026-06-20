@@ -157,7 +157,8 @@ def configure_window(
         page.padding = 0
         page.window.full_screen = True
         page.window.frameless = True
-        page.window.maximized = True
+        # Fullscreen and maximized are competing window-manager states on Linux.
+        page.window.maximized = False
         page.window.resizable = False
         page.window.maximizable = False
         return
