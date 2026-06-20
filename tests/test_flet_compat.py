@@ -3,10 +3,11 @@ import dataclasses
 import inspect
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import flet as ft
 
-from src.ui.gui.hud import apply_control_palette, configure_window
+from src.ui.gui.hud import apply_control_palette, configure_window, log_window_diagnostics
 
 
 class FakeWindow:
@@ -57,6 +58,18 @@ class FletCompatibilityTests(unittest.TestCase):
 
         self.assertEqual(page.window.width, 1280)
         self.assertEqual(page.window.height, 720)
+
+    def test_window_diagnostics_include_fullscreen_state(self):
+        page = FakePage()
+        configure_window(page, is_pi=True)
+
+        with mock.patch("builtins.print") as print_mock:
+            log_window_diagnostics(page, "test")
+
+        output = print_mock.call_args.args[0]
+        self.assertIn("[AIOT WINDOW]", output)
+        self.assertIn("stage='test'", output)
+        self.assertIn("full_screen=True", output)
 
     def test_control_palette_switches_to_light_and_back(self):
         child = ft.Text("Nội dung", color="#EAFBFA")
