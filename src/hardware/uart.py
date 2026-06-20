@@ -89,7 +89,9 @@ class AsyncHardwareController:
 
     async def _send_receive_locked(self, packet: dict) -> dict:
         payload = json.dumps(packet, ensure_ascii=False)
-        print(f"[UART TX] -> {payload}")
+        log_traffic = packet.get("action") != "GET_DHT"
+        if log_traffic:
+            print(f"[UART TX] -> {payload}")
 
         if not self.is_connected:
             connected = await self.connect()
@@ -127,7 +129,8 @@ class AsyncHardwareController:
             else:
                 response = {"status": "error", "message": "Unknown action"}
 
-            print(f"[UART RX SIM] <- {json.dumps(response)}")
+            if log_traffic:
+                print(f"[UART RX SIM] <- {json.dumps(response)}")
             return response
 
         try:
@@ -137,7 +140,8 @@ class AsyncHardwareController:
 
             line_bytes = await asyncio.wait_for(self.reader.readline(), timeout=2.0)
             line_str = line_bytes.decode('utf-8').strip()
-            print(f"[UART RX] <- {line_str}")
+            if log_traffic:
+                print(f"[UART RX] <- {line_str}")
 
             response = json.loads(line_str)
             self._update_local_cache(response)

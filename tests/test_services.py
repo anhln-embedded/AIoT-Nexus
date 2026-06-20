@@ -58,6 +58,29 @@ class HardwareTests(unittest.IsolatedAsyncioTestCase):
         results = await asyncio.gather(*(hw.get_dht_data() for _ in range(3)))
         self.assertTrue(all(item["status"] == "ok" for item in results))
 
+    @patch("builtins.print")
+    async def test_dht_polling_does_not_log_uart_traffic(self, mock_print):
+        hw = AsyncHardwareController(is_pi=False)
+        await hw.connect()
+        mock_print.reset_mock()
+
+        response = await hw.get_dht_data()
+
+        self.assertEqual(response["status"], "ok")
+        mock_print.assert_not_called()
+
+    @patch("builtins.print")
+    async def test_control_commands_still_log_uart_traffic(self, mock_print):
+        hw = AsyncHardwareController(is_pi=False)
+        await hw.connect()
+        mock_print.reset_mock()
+
+        await hw.set_relay(1, True)
+
+        logs = [str(call.args[0]) for call in mock_print.call_args_list]
+        self.assertTrue(any("[UART TX]" in line for line in logs))
+        self.assertTrue(any("[UART RX SIM]" in line for line in logs))
+
 
 class McpTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
