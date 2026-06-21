@@ -184,6 +184,7 @@ AIOT_XIAOZHI_CLIENT_ID=
 AIOT_XIAOZHI_PROTOCOL_VERSION=1
 AIOT_XIAOZHI_AUDIO_SAMPLE_RATE=16000
 AIOT_XIAOZHI_AUDIO_FRAME_DURATION=20
+AIOT_XIAOZHI_AUTO_CONTINUE=true
 AIOT_XIAOZHI_MQTT_USERNAME=
 AIOT_XIAOZHI_MQTT_PASSWORD=
 AIOT_XIAOZHI_MQTT_PUBLISH_TOPIC=
@@ -223,6 +224,11 @@ Gateway behavior:
 - App text questions route through `send_text_query()` when the gateway is
   enabled.
 - Voice mode can stream microphone PCM frames directly to XiaoZhi.
+- Microphone VAD prevents silence from opening a XiaoZhi listening turn. Follow-up
+  listening continues automatically by default; set
+  `AIOT_XIAOZHI_AUTO_CONTINUE=false` to require a new mic trigger for each turn.
+- While a conversation is active, the square stop button closes the current
+  XiaoZhi session and returns to idle. The next mic trigger opens a fresh session.
 - Incoming XiaoZhi audio frames are decoded with PyAV and played through PyAudio
   when that playback path is available.
 - MCP payloads are mapped through `XiaozhiMcpToolAdapter`.

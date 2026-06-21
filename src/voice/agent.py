@@ -449,8 +449,12 @@ class AsyncVoiceAgent:
         started_at = loop.time()
         speech_started_at = None
         silence_started_at = None
-        threshold = max(300, int(self.recognizer.energy_threshold))
+        base_speech_threshold = 180
+        threshold = base_speech_threshold
         noise_samples = []
+        pre_roll = []
+        pre_roll_limit = max(1, int(400 / frame_duration_ms))
+        consecutive_speech_frames = 0
         pending_pcm = b""
         rate_state = None
 
@@ -532,22 +536,34 @@ class AsyncVoiceAgent:
                     rms = audioop.rms(chunk, sample_width) if chunk else 0
 
                     if speech_started_at is None:
-                        if now - started_at < 0.4:
+                        pre_roll.append(chunk)
+                        if len(pre_roll) > pre_roll_limit:
+                            pre_roll.pop(0)
+
+                        if now - started_at < 0.4 and rms < base_speech_threshold:
                             noise_samples.append(rms)
                             if noise_samples:
                                 threshold = max(
-                                    threshold, int(max(noise_samples) * 2.5)
+                                    base_speech_threshold,
+                                    int(max(noise_samples) * 2.0),
                                 )
                         if rms >= threshold:
-                            speech_started_at = now
+                            consecutive_speech_frames += 1
+                        else:
+                            consecutive_speech_frames = 0
 
-                    yield chunk
+                        if consecutive_speech_frames < 2:
+                            continue
+
+                        speech_started_at = now
+                        for buffered_chunk in pre_roll:
+                            yield buffered_chunk
+                        pre_roll.clear()
+                    else:
+                        yield chunk
 
                     if stop_event is not None and stop_event.is_set():
                         return
-                    if speech_started_at is None:
-                        continue
-
                     if stop_event is None:
                         if rms < threshold:
                             if silence_started_at is None:

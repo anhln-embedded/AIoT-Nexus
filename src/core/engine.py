@@ -34,6 +34,7 @@ from src.core.config import (
     XIAOZHI_DEVICE_ID,
     XIAOZHI_AUDIO_FRAME_DURATION,
     XIAOZHI_AUDIO_SAMPLE_RATE,
+    XIAOZHI_AUTO_CONTINUE,
     XIAOZHI_GATEWAY_ENABLED,
     XIAOZHI_MQTT_PASSWORD,
     XIAOZHI_MQTT_PUBLISH_TOPIC,
@@ -86,6 +87,8 @@ class AsyncCoreEngine:
         self.xiaozhi_gateway = None
         self._last_response_from_xiaozhi = False
         self._interaction_lock = asyncio.Lock()
+        self._active_interaction_task = None
+        self._conversation_control_lock = asyncio.Lock()
 
     async def start(self):
         """Starts the central core engine, connects hardware, and spawns background tasks."""
@@ -226,8 +229,15 @@ class AsyncCoreEngine:
         if self.state != "IDLE" or self._interaction_lock.locked():
             return
 
-        async with self._interaction_lock:
-            await self._run_voice_pipeline()
+        current_task = asyncio.current_task()
+        self._active_interaction_task = current_task
+        try:
+            async with self._interaction_lock:
+                await self._ensure_xiaozhi_gateway_session()
+                await self._run_voice_pipeline()
+        finally:
+            if self._active_interaction_task is current_task:
+                self._active_interaction_task = None
 
     async def trigger_text_interaction(self, user_text: str):
         """Runs the AIoT interaction pipeline from typed user text."""
@@ -235,8 +245,72 @@ class AsyncCoreEngine:
         if not user_text or self.state != "IDLE" or self._interaction_lock.locked():
             return
 
-        async with self._interaction_lock:
-            await self._run_text_pipeline(user_text)
+        current_task = asyncio.current_task()
+        self._active_interaction_task = current_task
+        try:
+            async with self._interaction_lock:
+                await self._run_text_pipeline(user_text)
+        finally:
+            if self._active_interaction_task is current_task:
+                self._active_interaction_task = None
+
+    async def _ensure_xiaozhi_gateway_session(self):
+        if not XIAOZHI_GATEWAY_ENABLED:
+            return
+        if (
+            self.xiaozhi_gateway is not None
+            and self._xiaozhi_gateway_task is not None
+            and not self._xiaozhi_gateway_task.done()
+        ):
+            return
+
+        self.xiaozhi_gateway = self._create_xiaozhi_gateway()
+        self._xiaozhi_gateway_task = asyncio.create_task(
+            self._run_xiaozhi_gateway()
+        )
+
+    async def stop_conversation(self, *, abort_speaking: bool = True):
+        """Stops the active interaction and discards the current XiaoZhi session."""
+        async with self._conversation_control_lock:
+            gateway = self.xiaozhi_gateway
+            gateway_task = self._xiaozhi_gateway_task
+            active_task = self._active_interaction_task
+
+            if gateway is not None:
+                if abort_speaking and self.state in {"PROCESSING", "SPEAKING"}:
+                    await gateway.abort_speaking()
+                gateway.listening_finished_event.set()
+
+            if (
+                active_task is not None
+                and active_task is not asyncio.current_task()
+                and not active_task.done()
+            ):
+                active_task.cancel()
+                try:
+                    await active_task
+                except asyncio.CancelledError:
+                    pass
+
+            if gateway is not None:
+                await gateway.close()
+
+            if gateway_task is not None and not gateway_task.done():
+                try:
+                    await asyncio.wait_for(gateway_task, timeout=2.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    if not gateway_task.done():
+                        gateway_task.cancel()
+
+            self.xiaozhi_gateway = None
+            self._xiaozhi_gateway_task = None
+            self._active_interaction_task = None
+            self._last_response_from_xiaozhi = False
+            await self.set_state("IDLE")
+            await self.log_to_ui(
+                "[XIAOZHI EVENT] Conversation stopped; session closed."
+            )
+            await self.broadcast_telemetry()
 
     async def _run_voice_pipeline(self):
         try:
@@ -291,7 +365,23 @@ class AsyncCoreEngine:
                 await self.log_to_ui("XiaoZhi không nghe thấy câu tiếp theo, kết thúc hội thoại.")
                 break
 
+            server_farewell = bool(
+                getattr(
+                    self.xiaozhi_gateway,
+                    "server_farewell_event",
+                    None,
+                )
+                and self.xiaozhi_gateway.server_farewell_event.is_set()
+            )
+
             if not user_text.strip():
+                if server_farewell:
+                    await self._wait_for_xiaozhi_speech_finished()
+                    await self.log_to_ui(
+                        "[XIAOZHI EVENT] Server farewell detected; session closed."
+                    )
+                    await self.stop_conversation(abort_speaking=False)
+                    return
                 break
 
             if not getattr(self.xiaozhi_gateway, "last_stt_text", "").strip():
@@ -301,9 +391,16 @@ class AsyncCoreEngine:
             await self.chat_to_ui("assistant", ai_response)
             await self._wait_for_xiaozhi_speech_finished()
 
-            if self._is_xiaozhi_farewell(user_text, ai_response):
+            if server_farewell or self._is_xiaozhi_farewell(user_text, ai_response):
                 await self.log_to_ui(
-                    "[XIAOZHI EVENT] Farewell detected; conversation closed."
+                    "[XIAOZHI EVENT] Server farewell detected; session closed."
+                )
+                await self.stop_conversation(abort_speaking=False)
+                return
+
+            if not XIAOZHI_AUTO_CONTINUE:
+                await self.log_to_ui(
+                    "[MIC STREAM] Turn complete; waiting for the next voice trigger."
                 )
                 break
 
@@ -342,7 +439,16 @@ class AsyncCoreEngine:
         return user_text or "Âm thanh từ micro", ai_response
 
     async def _handle_xiaozhi_speech_state(self, state: str):
-        if state in {"SPEAKING", "IDLE"}:
+        if state == "SPEAKING":
+            await self.set_state(state)
+        elif state == "IDLE":
+            active_task = self._active_interaction_task
+            if (
+                XIAOZHI_AUTO_CONTINUE
+                and active_task is not None
+                and not active_task.done()
+            ):
+                return
             await self.set_state(state)
 
     async def _handle_xiaozhi_assistant_text(self, text: str):

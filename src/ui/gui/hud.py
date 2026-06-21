@@ -758,9 +758,16 @@ async def main_hud(page: ft.Page):
         return message_text
 
     async def on_trigger_click(e):
-        asyncio.create_task(core.trigger_voice_interaction())
+        if core.state == "IDLE":
+            asyncio.create_task(core.trigger_voice_interaction())
+        else:
+            asyncio.create_task(core.stop_conversation())
 
     async def submit_chat_text(e=None):
+        if chat_state["waiting"]:
+            await core.stop_conversation()
+            return
+
         text = chat_input.value.strip()
         if not text:
             return
@@ -1117,7 +1124,7 @@ async def main_hud(page: ft.Page):
         has_text = bool(chat_input.value.strip())
         if chat_state["waiting"]:
             chat_send_button.icon = ft.Icons.STOP_ROUNDED
-            chat_send_button.tooltip = "Đang chờ phản hồi"
+            chat_send_button.tooltip = "Ngừng trò chuyện"
             chat_send_button.bgcolor = ui_color("#EAFBFA")
             chat_send_button.icon_color = "#071012"
         elif has_text:
@@ -1343,6 +1350,8 @@ async def main_hud(page: ft.Page):
                         apply_mic_state_style("IDLE")
                         apply_camera_layout(bool(camera_switch.value))
                     elif ev_val == "LISTENING":
+                        chat_state["waiting"] = True
+                        update_chat_send_button()
                         status_label.value = "Đang lắng nghe..."
                         state_icon.name = ft.Icons.RECORD_VOICE_OVER
                         apply_mic_state_style("LISTENING")
@@ -1353,6 +1362,8 @@ async def main_hud(page: ft.Page):
                         state_icon.name = ft.Icons.PSYCHOLOGY
                         apply_mic_state_style("PROCESSING")
                     elif ev_val == "SPEAKING":
+                        chat_state["waiting"] = True
+                        update_chat_send_button()
                         status_label.value = "AIoT-Nexus đang nói..."
                         state_icon.name = ft.Icons.VOLUME_UP
                         apply_mic_state_style("SPEAKING")
