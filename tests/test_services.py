@@ -328,6 +328,25 @@ class McpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(gateway.last_stt_text, "Xin chao")
         self.assertEqual(logs[-1], "[USER]: Xin chao")
 
+    async def test_typed_query_stt_echo_does_not_emit_user_ui_log(self):
+        logs = []
+
+        async def capture_log(message):
+            logs.append(message)
+
+        gateway = XiaozhiWebSocketGateway(
+            XiaozhiGatewayConfig(url="ws://localhost:8000/xiaozhi"),
+            XiaozhiMcpToolAdapter(self.client),
+            log_callback=capture_log,
+        )
+        gateway._typed_query_text = "Xin chao"
+
+        await gateway.handle_json_message({"type": "stt", "text": "Xin chao"})
+
+        self.assertEqual(gateway.last_stt_text, "Xin chao")
+        self.assertEqual(logs[-1], "[TEXT ECHO]: Xin chao")
+        self.assertFalse(any(log.startswith("[USER]:") for log in logs))
+
     async def test_xiaozhi_tts_stop_reports_idle_and_logs_server_event(self):
         logs = []
         states = []

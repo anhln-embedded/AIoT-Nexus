@@ -6,7 +6,11 @@ from pathlib import Path
 
 import flet as ft
 
-from src.ui.gui.hud import apply_control_palette, configure_window
+from src.ui.gui.hud import (
+    apply_chat_bubble_shape,
+    apply_control_palette,
+    configure_window,
+)
 
 
 class FakeWindow:
@@ -81,6 +85,20 @@ class FletCompatibilityTests(unittest.TestCase):
         self.assertEqual(control.shadow.color, "#66FCF1,0.22")
         self.assertEqual(child.color, "#EAFBFA")
         self.assertEqual(hover_surface.bgcolor, "#18313A")
+
+    def test_chat_bubble_rounding_survives_theme_restyle(self):
+        bubble = ft.Container(border_radius=0, clip_behavior=ft.ClipBehavior.NONE)
+
+        apply_chat_bubble_shape(bubble)
+        apply_control_palette(bubble, light=True)
+        apply_chat_bubble_shape(bubble)
+
+        self.assertEqual(bubble.border_radius.top_left, 12)
+        self.assertEqual(bubble.border_radius.top_right, 12)
+        self.assertEqual(bubble.border_radius.bottom_left, 12)
+        self.assertEqual(bubble.border_radius.bottom_right, 12)
+        self.assertEqual(bubble.shape, ft.BoxShape.RECTANGLE)
+        self.assertEqual(bubble.clip_behavior, ft.ClipBehavior.ANTI_ALIAS)
 
     def test_hud_uses_valid_flet_constructor_arguments(self):
         hud_path = Path(__file__).parents[1] / "src" / "ui" / "gui" / "hud.py"

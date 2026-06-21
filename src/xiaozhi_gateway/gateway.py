@@ -55,6 +55,7 @@ class XiaozhiGatewayBase:
         self.listening_finished_event = asyncio.Event()
         self.server_farewell_event = asyncio.Event()
         self.last_stt_text = ""
+        self._typed_query_text: str | None = None
         self._outgoing: asyncio.Queue[dict[str, Any] | bytes | None] = asyncio.Queue()
         self._text_events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self.speech_state_callback: LogCallback = None
@@ -173,16 +174,19 @@ class XiaozhiGatewayBase:
         self._drain_text_events()
         self._speech_finished.set()
 
-        await self._outgoing.put(
-            {
-                "session_id": self.session_id,
-                "type": "listen",
-                "state": "detect",
-                "text": text,
-            }
-        )
-
-        return await self._collect_text_response(timeout, sentence_idle_timeout)
+        self._typed_query_text = text.strip()
+        try:
+            await self._outgoing.put(
+                {
+                    "session_id": self.session_id,
+                    "type": "listen",
+                    "state": "detect",
+                    "text": text,
+                }
+            )
+            return await self._collect_text_response(timeout, sentence_idle_timeout)
+        finally:
+            self._typed_query_text = None
 
     async def send_audio_query(
         self,
@@ -460,7 +464,10 @@ class XiaozhiGatewayBase:
             self.last_stt_text = text
             self.listening_finished_event.set()
             await self._text_events.put({"type": "stt", "text": text})
-            await self._log(f"[USER]: {text}")
+            if self._typed_query_text is not None:
+                await self._log(f"[TEXT ECHO]: {text}")
+            else:
+                await self._log(f"[USER]: {text}")
         elif message_type == "llm":
             text = message.get("text", "")
             if text:

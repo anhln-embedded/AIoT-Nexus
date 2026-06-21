@@ -12,6 +12,7 @@ from src.core.config import (
 )
 
 CAMERA_PREVIEW_FPS = float(os.getenv("AIOT_CAMERA_PREVIEW_FPS", "24"))
+CHAT_BUBBLE_RADIUS = 12
 
 DARK_TO_LIGHT_COLORS = {
     "#0B0C10": "#E2EBED",
@@ -97,6 +98,13 @@ def apply_control_palette(control, light: bool, seen=None):
             children = [children]
         for child in children:
             apply_control_palette(child, light, seen)
+
+
+def apply_chat_bubble_shape(control):
+    """Keeps dynamically-added chat bubbles rounded across theme changes."""
+    control.shape = ft.BoxShape.RECTANGLE
+    control.border_radius = ft.BorderRadius.all(CHAT_BUBBLE_RADIUS)
+    control.clip_behavior = ft.ClipBehavior.ANTI_ALIAS
 
 
 class FletImageWidgetWrapper:
@@ -680,6 +688,15 @@ async def main_hud(page: ft.Page):
         "active_assistant_text": None,
         "active_assistant_message": "",
     }
+    chat_bubble_surfaces = []
+
+    def refresh_chat_bubble_shapes():
+        for bubble_surface in chat_bubble_surfaces:
+            apply_chat_bubble_shape(bubble_surface)
+            try:
+                bubble_surface.update()
+            except Exception:
+                pass
 
     def append_log(message: str):
         # Surface only XiaoZhi conversation events in the chat panel.
@@ -729,29 +746,28 @@ async def main_hud(page: ft.Page):
         alignment = ft.Alignment.CENTER_RIGHT if is_user else ft.Alignment.CENTER_LEFT
         message_text = ft.Text(message, size=12, color=text_color, selectable=True)
 
-        chat_list.controls.append(
-            ft.Container(
-                alignment=alignment,
-                content=ft.Container(
-                    width=430,
-                    padding=ft.Padding.symmetric(horizontal=12, vertical=9),
-                    border_radius=8,
-                    bgcolor=bubble_color,
-                    border=ft.Border.all(1, border_color),
-                    content=ft.Column(
-                        spacing=4,
-                        controls=[
-                            ft.Text(
-                                label,
-                                size=9,
-                                color=ui_color("#66FCF1" if is_user else "#8EA0A7"),
-                                weight=ft.FontWeight.BOLD,
-                            ),
-                            message_text,
-                        ],
+        bubble_surface = ft.Container(
+            width=430,
+            padding=ft.Padding.symmetric(horizontal=12, vertical=9),
+            bgcolor=bubble_color,
+            border=ft.Border.all(1, border_color),
+            content=ft.Column(
+                spacing=4,
+                controls=[
+                    ft.Text(
+                        label,
+                        size=9,
+                        color=ui_color("#66FCF1" if is_user else "#8EA0A7"),
+                        weight=ft.FontWeight.BOLD,
                     ),
-                ),
-            )
+                    message_text,
+                ],
+            ),
+        )
+        apply_chat_bubble_shape(bubble_surface)
+        chat_bubble_surfaces.append(bubble_surface)
+        chat_list.controls.append(
+            ft.Container(alignment=alignment, content=bubble_surface)
         )
         page.update()
         return message_text
@@ -1335,6 +1351,8 @@ async def main_hud(page: ft.Page):
         apply_camera_layout(core.vision.is_enabled)
         update_chat_send_button()
         page.update()
+        # Apply dynamic bubble shape after Flet has rebuilt controls for the new theme.
+        refresh_chat_bubble_shapes()
 
     page.add(main_hud_layout)
     page.update()
