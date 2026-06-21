@@ -138,6 +138,47 @@ class McpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(controller.enabled_history, [False])
         self.assertEqual(vision.enabled_history, [])
 
+    async def test_ui_control_tools_update_engine_state(self):
+        core = AsyncCoreEngine()
+
+        theme_response = await core.mcp._execute_tool_json_rpc(
+            "set_interface_theme", {"theme": "light"}
+        )
+        mirror_response = await core.mcp._execute_tool_json_rpc(
+            "set_camera_mirror", {"enabled": True}
+        )
+        volume_response = await core.mcp._execute_tool_json_rpc(
+            "set_output_volume", {"volume": 35}
+        )
+
+        self.assertEqual(theme_response["result"]["theme"], "light")
+        self.assertEqual(core.interface_theme, "light")
+        self.assertTrue(mirror_response["result"]["enabled"])
+        self.assertTrue(core.vision.is_mirrored)
+        self.assertEqual(volume_response["result"]["volume"], 35)
+        self.assertEqual(core.output_volume, 35)
+        self.assertEqual(core.voice.output_volume, 0.35)
+
+        event_types = []
+        while not core.ui_queue.empty():
+            event_types.append(core.ui_queue.get_nowait()["type"])
+        self.assertIn("interface_theme", event_types)
+        self.assertIn("camera_mirror_state", event_types)
+        self.assertIn("output_volume", event_types)
+
+    async def test_ui_control_tools_reject_invalid_values(self):
+        core = AsyncCoreEngine()
+
+        theme_response = await core.mcp._execute_tool_json_rpc(
+            "set_interface_theme", {"theme": "blue"}
+        )
+        volume_response = await core.mcp._execute_tool_json_rpc(
+            "set_output_volume", {"volume": 101}
+        )
+
+        self.assertIn("error", theme_response)
+        self.assertIn("error", volume_response)
+
     async def test_offline_chat_routes_to_hardware(self):
         answer, frame = await self.client.chat(
             prompt="Nhiệt độ và độ ẩm phòng hiện tại là bao nhiêu?",
@@ -162,6 +203,9 @@ class McpTests(unittest.IsolatedAsyncioTestCase):
         tool_names = [tool["name"] for tool in tools_response["result"]["tools"]]
         self.assertIn("self.aiot.get_dht_data", tool_names)
         self.assertIn("self.aiot.set_camera_enabled", tool_names)
+        self.assertIn("self.aiot.set_camera_mirror", tool_names)
+        self.assertIn("self.aiot.set_interface_theme", tool_names)
+        self.assertIn("self.aiot.set_output_volume", tool_names)
 
         call_response = await adapter.handle_payload(
             {
@@ -701,6 +745,20 @@ class VoiceStreamingTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(StopAsyncIteration):
                 await asyncio.wait_for(anext(frames), timeout=1.0)
 
+    async def test_xiaozhi_pcm_playback_applies_output_volume(self):
+        player = object.__new__(XiaozhiAudioPlayer)
+        player._play_lock = asyncio.Lock()
+        player._stream = Mock()
+        player._ensure_stream = Mock()
+        player.volume = 0.5
+        pcm = np.full(8, 1000, dtype=np.int16).tobytes()
+
+        await player._play_pcm(pcm)
+
+        written = player._stream.write.call_args.args[0]
+        samples = np.frombuffer(written, dtype=np.int16)
+        self.assertTrue(np.all(np.abs(samples - 500) <= 1))
+
 
 class CoreTests(unittest.IsolatedAsyncioTestCase):
     def test_pi_ui_mode_is_separate_from_uart_mode(self):
@@ -832,6 +890,9 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
                 self.plays_remote_audio = True
                 self.last_stt_text = "Xin chao"
                 self.streamed_frames = []
+                self.listening_finished_event = asyncio.Event()
+                self.close = AsyncMock()
+                self.abort_speaking = AsyncMock()
 
             async def send_audio_stream_query(self, frames, sample_rate, sample_width, **kwargs):
                 self.sample_rate = sample_rate
@@ -845,7 +906,8 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
             yield b"pcm-frame"
 
         core = AsyncCoreEngine()
-        core.xiaozhi_gateway = FakeGateway()
+        gateway = FakeGateway()
+        core.xiaozhi_gateway = gateway
         core.voice.stream_microphone_pcm_frames = fake_frames
         core.voice.listen = AsyncMock()
         core.voice.speak = AsyncMock()
@@ -856,10 +918,12 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
 
         core.voice.listen.assert_not_awaited()
         core.voice.speak.assert_not_awaited()
-        self.assertEqual(core.xiaozhi_gateway.streamed_frames, [b"pcm-frame"])
-        self.assertEqual(core.xiaozhi_gateway.sample_rate, core.xiaozhi_gateway.config.audio_sample_rate)
-        self.assertEqual(core.xiaozhi_gateway.sample_width, 2)
-        self.assertEqual(core.xiaozhi_gateway.listen_mode, "auto")
+        self.assertEqual(gateway.streamed_frames, [b"pcm-frame"])
+        self.assertEqual(gateway.sample_rate, gateway.config.audio_sample_rate)
+        self.assertEqual(gateway.sample_width, 2)
+        self.assertEqual(gateway.listen_mode, "auto")
+        gateway.close.assert_awaited_once()
+        self.assertIsNone(core.xiaozhi_gateway)
         queued_events = []
         while not core.ui_queue.empty():
             queued_events.append(core.ui_queue.get_nowait())
@@ -877,6 +941,9 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
                 self.plays_remote_audio = True
                 self.tts_stop = asyncio.Event()
                 self.wait_started = asyncio.Event()
+                self.listening_finished_event = asyncio.Event()
+                self.close = AsyncMock()
+                self.abort_speaking = AsyncMock()
                 self.calls = 0
 
             async def send_audio_stream_query(self, frames, sample_rate, sample_width, **kwargs):
@@ -890,13 +957,15 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
             async def wait_for_speech_finished(self):
                 self.wait_started.set()
                 await self.tts_stop.wait()
+                return True
 
         async def fake_frames(**kwargs):
             yield b"pcm-frame"
 
         core = AsyncCoreEngine()
         core.is_running = True
-        core.xiaozhi_gateway = FakeGateway()
+        gateway = FakeGateway()
+        core.xiaozhi_gateway = gateway
         core.voice.stream_microphone_pcm_frames = fake_frames
         core.voice.listen = AsyncMock()
         core.voice.speak = AsyncMock()
@@ -906,14 +975,16 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
             "src.core.engine.XIAOZHI_AUTO_CONTINUE", True
         ):
             task = asyncio.create_task(core._run_voice_pipeline())
-            await asyncio.wait_for(core.xiaozhi_gateway.wait_started.wait(), timeout=1.0)
+            await asyncio.wait_for(gateway.wait_started.wait(), timeout=1.0)
             self.assertEqual(core.state, "SPEAKING")
             self.assertFalse(task.done())
-            core.xiaozhi_gateway.tts_stop.set()
+            gateway.tts_stop.set()
             await task
 
         self.assertEqual(core.state, "IDLE")
-        self.assertEqual(core.xiaozhi_gateway.calls, 2)
+        self.assertEqual(gateway.calls, 2)
+        gateway.close.assert_awaited_once()
+        self.assertIsNone(core.xiaozhi_gateway)
 
     async def test_xiaozhi_voice_pipeline_stops_after_one_turn_when_disabled(self):
         class FakeGateway:
@@ -921,6 +992,9 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
                 self.config = XiaozhiGatewayConfig()
                 self.plays_remote_audio = True
                 self.last_stt_text = "Xin chao"
+                self.listening_finished_event = asyncio.Event()
+                self.close = AsyncMock()
+                self.abort_speaking = AsyncMock()
                 self.calls = 0
 
             async def send_audio_stream_query(self, frames, **_kwargs):
@@ -937,7 +1011,8 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
 
         core = AsyncCoreEngine()
         core.is_running = True
-        core.xiaozhi_gateway = FakeGateway()
+        gateway = FakeGateway()
+        core.xiaozhi_gateway = gateway
         core.voice.stream_microphone_pcm_frames = fake_frames
         core.broadcast_telemetry = AsyncMock()
 
@@ -947,7 +1022,109 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
             await core._run_voice_pipeline()
 
         self.assertEqual(core.state, "IDLE")
-        self.assertEqual(core.xiaozhi_gateway.calls, 1)
+        self.assertEqual(gateway.calls, 1)
+        gateway.close.assert_awaited_once()
+        self.assertIsNone(core.xiaozhi_gateway)
+
+    async def test_microphone_listen_timeout_closes_session(self):
+        class FakeGateway:
+            def __init__(self):
+                self.config = XiaozhiGatewayConfig()
+                self.plays_remote_audio = True
+                self.last_stt_text = ""
+                self.listening_finished_event = asyncio.Event()
+                self.close = AsyncMock()
+                self.abort_speaking = AsyncMock()
+
+            async def send_audio_stream_query(self, frames, **_kwargs):
+                async for _frame in frames:
+                    pass
+                return ""
+
+        async def no_speech_frames(**_kwargs):
+            if False:
+                yield b""
+
+        core = AsyncCoreEngine()
+        gateway = FakeGateway()
+        core.is_running = True
+        core.xiaozhi_gateway = gateway
+        core.voice.stream_microphone_pcm_frames = no_speech_frames
+        core.broadcast_telemetry = AsyncMock()
+
+        with patch("src.core.engine.XIAOZHI_GATEWAY_ENABLED", True):
+            await core._run_voice_pipeline()
+
+        gateway.close.assert_awaited_once()
+        self.assertIsNone(core.xiaozhi_gateway)
+        self.assertEqual(core.state, "IDLE")
+
+    async def test_first_response_timeout_closes_session(self):
+        class FakeGateway:
+            def __init__(self):
+                self.config = XiaozhiGatewayConfig()
+                self.plays_remote_audio = True
+                self.listening_finished_event = asyncio.Event()
+                self.close = AsyncMock()
+                self.abort_speaking = AsyncMock()
+
+            async def send_audio_stream_query(self, frames, **_kwargs):
+                async for _frame in frames:
+                    pass
+                raise TimeoutError("No response")
+
+        async def fake_frames(**_kwargs):
+            yield b"pcm-frame"
+
+        core = AsyncCoreEngine()
+        gateway = FakeGateway()
+        core.is_running = True
+        core.xiaozhi_gateway = gateway
+        core.voice.stream_microphone_pcm_frames = fake_frames
+        core.voice.speak = AsyncMock()
+        core.broadcast_telemetry = AsyncMock()
+
+        with patch("src.core.engine.XIAOZHI_GATEWAY_ENABLED", True):
+            await core._run_voice_pipeline()
+
+        gateway.close.assert_awaited_once()
+        self.assertIsNone(core.xiaozhi_gateway)
+        self.assertEqual(core.state, "IDLE")
+
+    async def test_tts_stop_timeout_closes_session(self):
+        class FakeGateway:
+            def __init__(self):
+                self.config = XiaozhiGatewayConfig()
+                self.plays_remote_audio = True
+                self.last_stt_text = "Xin chao"
+                self.listening_finished_event = asyncio.Event()
+                self.close = AsyncMock()
+                self.abort_speaking = AsyncMock()
+
+            async def send_audio_stream_query(self, frames, **_kwargs):
+                async for _frame in frames:
+                    pass
+                return "XiaoZhi response"
+
+            async def wait_for_speech_finished(self):
+                return False
+
+        async def fake_frames(**_kwargs):
+            yield b"pcm-frame"
+
+        core = AsyncCoreEngine()
+        gateway = FakeGateway()
+        core.is_running = True
+        core.xiaozhi_gateway = gateway
+        core.voice.stream_microphone_pcm_frames = fake_frames
+        core.broadcast_telemetry = AsyncMock()
+
+        with patch("src.core.engine.XIAOZHI_GATEWAY_ENABLED", True):
+            await core._run_voice_pipeline()
+
+        gateway.close.assert_awaited_once()
+        self.assertIsNone(core.xiaozhi_gateway)
+        self.assertEqual(core.state, "IDLE")
 
     async def test_xiaozhi_voice_pipeline_closes_after_farewell(self):
         class FakeGateway:

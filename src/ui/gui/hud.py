@@ -565,10 +565,9 @@ async def main_hud(page: ft.Page):
         except Exception as ex:
             print(f"Error toggling camera enabled state: {ex}")
 
-    def on_camera_mirror_change(e):
+    async def on_camera_mirror_change(e):
         try:
-            core.vision.is_mirrored = bool(camera_mirror_switch.value)
-            page.update()
+            await core.set_camera_mirror(bool(camera_mirror_switch.value))
         except Exception as ex:
             print(f"Error updating camera mirror mode: {ex}")
 
@@ -847,13 +846,26 @@ async def main_hud(page: ft.Page):
     )
     speaker_dropdown.on_change = on_speaker_change
 
-    def on_theme_change(e):
-        apply_app_theme(bool(theme_switch.value))
+    async def on_theme_change(e):
+        await core.set_interface_theme("light" if theme_switch.value else "dark")
 
     theme_switch = ft.Switch(
         value=False,
         active_color="#66FCF1",
         on_change=on_theme_change,
+    )
+
+    async def on_volume_change(e):
+        await core.set_output_volume(int(round(float(volume_slider.value))))
+
+    volume_slider = ft.Slider(
+        min=0,
+        max=100,
+        divisions=20,
+        value=core.output_volume,
+        label="{value}%",
+        width=180,
+        on_change_end=on_volume_change,
     )
 
     chat_state = {"waiting": False}
@@ -950,6 +962,22 @@ async def main_hud(page: ft.Page):
                                 ],
                             ),
                             speaker_dropdown,
+                        ],
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Divider(color="#2E3B48", height=1),
+                    ft.Row(
+                        controls=[
+                            ft.Icon(ft.Icons.VOLUME_UP_ROUNDED, color="#8EA0A7", size=20),
+                            ft.Column(
+                                expand=True,
+                                spacing=3,
+                                controls=[
+                                    ft.Text("Âm lượng", size=13, color="#EAFBFA"),
+                                    ft.Text("Mức âm thanh đầu ra của trợ lý", size=10, color="#8EA0A7"),
+                                ],
+                            ),
+                            volume_slider,
                         ],
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
@@ -1420,6 +1448,20 @@ async def main_hud(page: ft.Page):
                     camera_placeholder.update()
                     camera_feed.update()
                     fps_container.update()
+
+                elif ev_type == "camera_mirror_state":
+                    camera_mirror_switch.value = bool(ev_val)
+                    camera_mirror_switch.update()
+
+                elif ev_type == "interface_theme":
+                    light = str(ev_val).lower() == "light"
+                    theme_switch.value = light
+                    apply_app_theme(light)
+                    theme_switch.update()
+
+                elif ev_type == "output_volume":
+                    volume_slider.value = int(ev_val)
+                    volume_slider.update()
 
                 if ev_type != "camera_frame":
                     page.update()

@@ -67,6 +67,8 @@ class AsyncCoreEngine:
         self.vision = AsyncVisionAgent(camera_index=CAMERA_INDEX)
         self.vision.state_callback = self.handle_camera_state_change
         self.voice = AsyncVoiceAgent()
+        self.interface_theme = "dark"
+        self.output_volume = 100
         self.mcp = AsyncMcpClient(
             hw_controller=self.hw,
             vision_agent=self.vision,
@@ -207,6 +209,7 @@ class AsyncCoreEngine:
         gateway.speech_state_callback = self._handle_xiaozhi_speech_state
         gateway.assistant_text_callback = self._handle_xiaozhi_assistant_text
         gateway.audio_player.set_output_device(self.voice.speaker_index)
+        gateway.audio_player.set_volume(self.output_volume / 100.0)
         return gateway
 
     async def handle_tool_execution_hook(self, name: str, b64_frame: str, result: dict):
@@ -361,9 +364,16 @@ class AsyncCoreEngine:
                 )
             except TimeoutError:
                 if turn == 0:
+                    await self.log_to_ui(
+                        "XiaoZhi không phản hồi đúng thời hạn, đóng phiên hội thoại."
+                    )
+                    await self.stop_conversation(abort_speaking=False)
                     raise
-                await self.log_to_ui("XiaoZhi không nghe thấy câu tiếp theo, kết thúc hội thoại.")
-                break
+                await self.log_to_ui(
+                    "XiaoZhi không nghe thấy câu tiếp theo, đóng phiên hội thoại."
+                )
+                await self.stop_conversation(abort_speaking=False)
+                return
 
             server_farewell = bool(
                 getattr(
@@ -382,14 +392,24 @@ class AsyncCoreEngine:
                     )
                     await self.stop_conversation(abort_speaking=False)
                     return
-                break
+                await self.log_to_ui(
+                    "[MIC STREAM] Listening timed out; session closed."
+                )
+                await self.stop_conversation(abort_speaking=False)
+                return
 
             if not getattr(self.xiaozhi_gateway, "last_stt_text", "").strip():
                 await self.chat_to_ui("user", user_text)
             await self.log_to_ui(f"Báº¡n nÃ³i: \"{user_text}\"")
             await self.set_state("SPEAKING")
             await self.chat_to_ui("assistant", ai_response)
-            await self._wait_for_xiaozhi_speech_finished()
+            speech_finished = await self._wait_for_xiaozhi_speech_finished()
+            if not speech_finished:
+                await self.log_to_ui(
+                    "[XIAOZHI EVENT] TTS stop timed out; session closed."
+                )
+                await self.stop_conversation(abort_speaking=False)
+                return
 
             if server_farewell or self._is_xiaozhi_farewell(user_text, ai_response):
                 await self.log_to_ui(
@@ -402,11 +422,13 @@ class AsyncCoreEngine:
                 await self.log_to_ui(
                     "[MIC STREAM] Turn complete; waiting for the next voice trigger."
                 )
-                break
+                await self.stop_conversation(abort_speaking=False)
+                return
 
             turn += 1
             if not self.is_running:
-                break
+                await self.stop_conversation(abort_speaking=False)
+                return
 
     async def _run_xiaozhi_voice_pipeline(self, response_timeout: float = 30.0) -> tuple[str, str]:
         await self.log_to_ui("[MIC STREAM] Listening and streaming audio to XiaoZhi...")
@@ -481,7 +503,8 @@ class AsyncCoreEngine:
 
     async def _wait_for_xiaozhi_speech_finished(self):
         if self.xiaozhi_gateway and hasattr(self.xiaozhi_gateway, "wait_for_speech_finished"):
-            await self.xiaozhi_gateway.wait_for_speech_finished()
+            return await self.xiaozhi_gateway.wait_for_speech_finished()
+        return True
 
     async def _run_text_pipeline(self, user_text: str):
         try:
@@ -570,6 +593,45 @@ class AsyncCoreEngine:
             "value": enabled
         })
         await self.vision.set_enabled(enabled)
+
+    async def set_camera_mirror(self, enabled: bool):
+        """Updates camera mirror mode and synchronizes the HUD control."""
+        self.vision.is_mirrored = bool(enabled)
+        await self.ui_queue.put(
+            {"type": "camera_mirror_state", "value": self.vision.is_mirrored}
+        )
+        await self.log_to_ui(
+            f"System: Camera mirror mode {'enabled' if enabled else 'disabled'}."
+        )
+
+    async def set_interface_theme(self, theme: str):
+        """Requests a light or dark HUD theme."""
+        normalized = str(theme).strip().lower()
+        if normalized not in {"light", "dark"}:
+            raise ValueError("Theme must be 'light' or 'dark'")
+        self.interface_theme = normalized
+        await self.ui_queue.put(
+            {"type": "interface_theme", "value": normalized}
+        )
+        await self.log_to_ui(f"System: Interface theme set to {normalized}.")
+
+    async def set_output_volume(self, volume: int):
+        """Sets local and XiaoZhi playback volume from 0 to 100."""
+        if isinstance(volume, bool) or not isinstance(volume, (int, float)):
+            raise ValueError("Volume must be a number from 0 to 100")
+        if not 0 <= float(volume) <= 100:
+            raise ValueError("Volume must be between 0 and 100")
+        self.output_volume = int(round(float(volume)))
+        normalized = self.output_volume / 100.0
+        self.voice.set_output_volume(normalized)
+        if self.xiaozhi_gateway is not None:
+            self.xiaozhi_gateway.audio_player.set_volume(normalized)
+        await self.ui_queue.put(
+            {"type": "output_volume", "value": self.output_volume}
+        )
+        await self.log_to_ui(
+            f"System: Output volume set to {self.output_volume}%."
+        )
 
     async def update_camera_index(self, index: int):
         """Updates the camera index dynamically."""

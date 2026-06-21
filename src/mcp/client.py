@@ -74,6 +74,7 @@ class AsyncMcpClient:
                 "Bạn có quyền truy cập trực tiếp vào phần cứng thông qua các công cụ. "
                 "Khi người dùng yêu cầu đo nhiệt độ/độ ẩm, phát hiện mặt, nhận diện màu sắc, bật/tắt camera hoặc hỏi thời tiết, "
                 "bạn PHẢI gọi công cụ tương ứng để lấy dữ liệu thực tế thay vì tự đoán."
+                " Always use the matching MCP tool for interface theme, camera mirror, and output volume requests."
             )},
             {"role": "user", "content": prompt}
         ]

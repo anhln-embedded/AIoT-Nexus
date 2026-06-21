@@ -232,6 +232,9 @@ Gateway behavior:
 - Incoming XiaoZhi audio frames are decoded with PyAV and played through PyAudio
   when that playback path is available.
 - MCP payloads are mapped through `XiaozhiMcpToolAdapter`.
+- UI control MCP tools include `set_interface_theme`, `set_camera_enabled`,
+  `set_camera_mirror`, and `set_output_volume`. Tool-driven changes synchronize
+  the HUD controls and affect actual camera/audio runtime state.
 
 Generate a XiaoZhi activation code and `.env` block:
 

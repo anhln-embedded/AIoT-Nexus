@@ -8,6 +8,7 @@ class McpToolContext:
     hw: Any
     vision: Any
     camera_controller: Any = None
+    ui_controller: Any = None
 
 
 ToolHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]] | dict[str, Any]]

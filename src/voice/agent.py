@@ -59,6 +59,7 @@ class AsyncVoiceAgent:
         self._microphone = None
         self.microphone_index = None
         self.speaker_index = None
+        self.output_volume = 1.0
         self.is_calibrated = False
 
     @property
@@ -293,6 +294,11 @@ class AsyncVoiceAgent:
         if pygame is not None and pygame.mixer.get_init():
             pygame.mixer.music.stop()
             pygame.mixer.quit()
+
+    def set_output_volume(self, volume: float):
+        self.output_volume = max(0.0, min(1.0, float(volume)))
+        if pygame is not None and pygame.mixer.get_init():
+            pygame.mixer.music.set_volume(self.output_volume)
 
     def _initialize_pygame_mixer(self):
         if pygame.mixer.get_init():
@@ -634,6 +640,7 @@ class AsyncVoiceAgent:
                 if not pygame.mixer.get_init():
                     self._initialize_pygame_mixer()
                 pygame.mixer.music.load(temp_file_path)
+                pygame.mixer.music.set_volume(self.output_volume)
                 pygame.mixer.music.play()
                 return True
             except Exception as e:
@@ -667,7 +674,7 @@ $text = [Text.Encoding]::UTF8.GetString($bytes)
 Add-Type -AssemblyName System.Speech
 $speaker = New-Object System.Speech.Synthesis.SpeechSynthesizer
 $speaker.Rate = 0
-$speaker.Volume = 100
+$speaker.Volume = {int(round(self.output_volume * 100))}
 $speaker.Speak($text)
 """
         encoded_script = base64.b64encode(script.encode("utf-16le")).decode("ascii")
@@ -696,7 +703,7 @@ $speaker.Speak($text)
         def _speak():
             engine = pyttsx3.init()
             engine.setProperty('rate', 150)
-            engine.setProperty('volume', 1.0)
+            engine.setProperty('volume', self.output_volume)
             
             voices = engine.getProperty('voices')
             vi_voice = None

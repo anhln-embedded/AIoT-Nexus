@@ -1,4 +1,5 @@
 import asyncio
+import audioop
 from typing import Optional
 
 
@@ -19,6 +20,7 @@ class XiaozhiAudioPlayer:
         self._stream = None
         self._backend = None
         self.output_device_index = None
+        self.volume = 1.0
 
         try:
             import av
@@ -94,6 +96,8 @@ class XiaozhiAudioPlayer:
     async def _play_pcm(self, pcm_bytes: bytes):
         async with self._play_lock:
             self._ensure_stream()
+            if self.volume != 1.0:
+                pcm_bytes = audioop.mul(pcm_bytes, 2, self.volume)
             await asyncio.to_thread(self._stream.write, pcm_bytes)
 
     def _ensure_stream(self):
@@ -116,6 +120,9 @@ class XiaozhiAudioPlayer:
             self._stream.stop_stream()
             self._stream.close()
             self._stream = None
+
+    def set_volume(self, volume: float):
+        self.volume = max(0.0, min(1.0, float(volume)))
 
     def close(self):
         if self._stream:
